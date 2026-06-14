@@ -86,7 +86,7 @@ class GoogleAuth:
         self._secrets.store(self._account_id, _TOKEN_KIND, json.dumps(self._token))
 
     # -- interactive (system browser + loopback + PKCE) ------------------
-    def sign_in_interactive(self, scopes: Sequence[str] = None) -> dict:
+    def sign_in_interactive(self, scopes: Sequence[str] = None, open_url=None) -> dict:
         scopes = list(scopes or (SCOPES_BASE + SCOPES_MAIL + SCOPES_CALENDAR))
         verifier = _b64url(_secrets.token_bytes(48))
         challenge = _b64url(hashlib.sha256(verifier.encode()).digest())
@@ -109,11 +109,14 @@ class GoogleAuth:
         }
         url = f"{AUTH_URI}?{urllib.parse.urlencode(params)}"
 
-        # Open the browser; the portal/Gtk launcher is used by the caller's UI,
-        # here we fall back to xdg-open via webbrowser for thread-safety.
-        import webbrowser
+        # Prefer the caller's portal-aware opener (Gtk.show_uri on the main
+        # thread); fall back to webbrowser for non-GUI callers.
+        if open_url is not None:
+            open_url(url)
+        else:
+            import webbrowser
 
-        webbrowser.open(url)
+            webbrowser.open(url)
 
         threading.Thread(target=server.handle_request, daemon=True).start()
         # Wait (bounded) for the redirect to arrive.

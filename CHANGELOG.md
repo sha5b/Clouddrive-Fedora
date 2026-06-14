@@ -46,5 +46,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   shape as Graph. Mail/Calendar views are now provider-agnostic (one factory
   picks Microsoft or Google per account). `google-client-id` /
   `CLOUDDRIVE_GOOGLE_CLIENT_ID` config.
+- Message reading: open a mail row to read its body (HTML stripped to text).
+- Dashboard ("Overview"): merges every account's calendar into one 7-day
+  timeline and lists recent mail across accounts (unread first), each labeled
+  with its account — the whole day at a glance.
+- Sign-in UX: when no client ID is configured, show a clear "setup needed"
+  dialog instead of a silent toast; Google sign-in opens the browser via the
+  portal-aware launcher on the main thread.
 
 [Unreleased]: https://github.com/sha5b/Clouddrive-Fedora

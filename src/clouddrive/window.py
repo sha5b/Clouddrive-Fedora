@@ -54,11 +54,20 @@ class ClouddriveWindow(Adw.ApplicationWindow):
     # -- sidebar ----------------------------------------------------------
     def _refresh_sidebar(self) -> None:
         self.sidebar_list.remove_all()
+        if not self._registry.is_empty():
+            self.sidebar_list.append(self._make_overview_row())
         for account in self._registry.accounts():
             self.sidebar_list.append(self._make_account_row(account))
 
         if self._registry.is_empty():
             self.content_nav.pop_to_tag("welcome")
+
+    def _make_overview_row(self) -> Gtk.ListBoxRow:
+        row = Adw.ActionRow(title=_("Overview"), subtitle=_("Calendars and mail at a glance"))
+        row.add_prefix(Gtk.Image.new_from_icon_name("view-grid-symbolic"))
+        row.set_activatable(True)
+        row._overview = True
+        return row
 
     def _make_account_row(self, account) -> Gtk.ListBoxRow:
         module = self._engine.get(account.module_id)
@@ -73,9 +82,23 @@ class ClouddriveWindow(Adw.ApplicationWindow):
     def _on_row_selected(self, _list, row) -> None:
         if row is None:
             return
+        if getattr(row, "_overview", False):
+            self._show_dashboard()
+            return
         account = self._registry.get(getattr(row, "_account_id", ""))
         if account is not None:
             self._show_account(account)
+
+    def _show_dashboard(self) -> None:
+        from .widgets.dashboard_view import DashboardView
+
+        header = Adw.HeaderBar()
+        toolbar = Adw.ToolbarView()
+        toolbar.add_top_bar(header)
+        toolbar.set_content(DashboardView(self))
+        page = Adw.NavigationPage(title=_("Overview"), tag="overview")
+        page.set_child(toolbar)
+        self.content_nav.replace([page])
 
     # -- per-account content ---------------------------------------------
     def _show_account(self, account) -> None:
@@ -154,9 +177,7 @@ class ClouddriveWindow(Adw.ApplicationWindow):
             return
 
         if not client_id:
-            self.add_toast(
-                _("No %s client ID configured — see docs/AUTH.md.") % label
-            )
+            self._show_setup_needed(label)
             return
 
         self.add_toast(_("Opening your browser to sign in…"))
@@ -197,7 +218,7 @@ class ClouddriveWindow(Adw.ApplicationWindow):
 
         try:
             auth = GoogleAuth(client_id, secrets, account.id)
-            result = auth.sign_in_interactive()
+            result = auth.sign_in_interactive(open_url=self.open_uri)
             try:
                 ident = GoogleAuth.fetch_email(result["access_token"])
             except Exception:  # noqa: BLE001 - identity lookup is best-effort
@@ -217,6 +238,24 @@ class ClouddriveWindow(Adw.ApplicationWindow):
         self.add_toast(_("Signed in as %s") % account.display_name)
         self._show_account(account)
         return False
+
+    def _show_setup_needed(self, provider_label) -> None:
+        dialog = Adw.AlertDialog(
+            heading=_("%s sign-in isn’t set up yet") % provider_label,
+            body=_(
+                "Clouddrive needs a %s app ID before it can open the sign-in "
+                "page. This is a one-time setup by whoever builds the app — set "
+                "CLOUDDRIVE_MS_CLIENT_ID / CLOUDDRIVE_GOOGLE_CLIENT_ID or the "
+                "matching setting. See docs/AUTH.md."
+            )
+            % provider_label,
+        )
+        dialog.add_response("ok", _("OK"))
+        dialog.present(self)
+
+    def open_uri(self, uri: str) -> None:
+        """Open a URI via the portal-aware launcher, on the main thread."""
+        GLib.idle_add(lambda: (Gtk.show_uri(self, uri, 0), False)[1])
 
     # -- helpers ----------------------------------------------------------
     def add_toast(self, message: str) -> None:
