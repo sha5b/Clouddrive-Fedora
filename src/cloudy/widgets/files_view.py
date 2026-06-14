@@ -2,8 +2,9 @@
 # SPDX-FileCopyrightText: 2026 Fiber Elements
 """Files surface for a signed-in Microsoft 365 account.
 
-Lists the account's drives/libraries and lets the user mount one so it appears
-in the file manager. Drive listing is done off the UI thread.
+Two sections: the user's own OneDrive drives and the document libraries of the
+Teams they belong to (mounted at the team level). Enumeration runs off the UI
+thread.
 """
 
 from __future__ import annotations
@@ -32,15 +33,23 @@ class FilesView(Adw.Bin):
         self._page.add(self._backend_group)
         self._show_backend_status()
 
-        self._library_group = Adw.PreferencesGroup(
-            title=_("Your libraries"),
+        self._drives_group = Adw.PreferencesGroup(
+            title=_("Your OneDrive"),
             description=_("Mount a library to open it in Files like a network drive."),
         )
-        self._page.add(self._library_group)
-        self._loading_row = Adw.ActionRow(title=_("Loading libraries…"))
-        self._library_group.add(self._loading_row)
+        self._page.add(self._drives_group)
+        self._drives_loading = Adw.ActionRow(title=_("Loading libraries…"))
+        self._drives_group.add(self._drives_loading)
 
-        self._load_drives_async()
+        self._teams_group = Adw.PreferencesGroup(
+            title=_("Teams"),
+            description=_("Document libraries of the Teams you belong to."),
+        )
+        self._page.add(self._teams_group)
+        self._teams_loading = Adw.ActionRow(title=_("Loading Teams…"))
+        self._teams_group.add(self._teams_loading)
+
+        self._load_async()
 
     # -- backend status ---------------------------------------------------
     def _show_backend_status(self) -> None:
@@ -59,42 +68,50 @@ class FilesView(Adw.Bin):
             row.add_prefix(Gtk.Image.new_from_icon_name("dialog-warning-symbolic"))
         self._backend_group.add(row)
 
-    # -- drive loading (off the UI thread) --------------------------------
-    def _load_drives_async(self) -> None:
+    # -- loading (off the UI thread) --------------------------------------
+    def _load_async(self) -> None:
         def worker():
-            try:
-                from .graph_helper import build_graph_client
+            from .graph_helper import build_graph_client
 
+            try:
                 graph = build_graph_client(self._window.get_application(), self._account)
+            except Exception as exc:  # noqa: BLE001 - no client/auth
+                GLib.idle_add(self._fill, self._drives_group, self._drives_loading, None, str(exc), False)
+                GLib.idle_add(self._fill, self._teams_group, self._teams_loading, None, str(exc), True)
+                return
+
+            try:
                 drives = graph.list_drives()
-                GLib.idle_add(self._on_drives_loaded, drives, None)
+                GLib.idle_add(self._fill, self._drives_group, self._drives_loading, drives, None, False)
             except Exception as exc:  # noqa: BLE001
-                GLib.idle_add(self._on_drives_loaded, None, str(exc))
+                GLib.idle_add(self._fill, self._drives_group, self._drives_loading, None, str(exc), False)
+
+            try:
+                teams = graph.list_teams()
+                GLib.idle_add(self._fill, self._teams_group, self._teams_loading, teams, None, True)
+            except Exception as exc:  # noqa: BLE001
+                GLib.idle_add(self._fill, self._teams_group, self._teams_loading, None, str(exc), True)
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _on_drives_loaded(self, drives, error) -> bool:
-        self._library_group.remove(self._loading_row)
+    def _fill(self, group, loading_row, drives, error, is_team) -> bool:
+        group.remove(loading_row)
         if error:
-            self._library_group.add(
-                Adw.ActionRow(
-                    title=_("Couldn't load libraries"),
-                    subtitle=error,
-                )
-            )
+            group.add(Adw.ActionRow(title=_("Couldn't load"), subtitle=error))
             return False
         if not drives:
-            self._library_group.add(
-                Adw.ActionRow(title=_("No libraries found for this account."))
-            )
+            empty = _("You don't belong to any Teams.") if is_team else _("No libraries found.")
+            group.add(Adw.ActionRow(title=empty))
             return False
         for drive in drives:
-            self._library_group.add(self._drive_row(drive))
+            group.add(self._drive_row(drive, is_team))
         return False
 
-    def _drive_row(self, drive) -> Adw.ActionRow:
-        row = Adw.ActionRow(title=drive.name, subtitle=drive.kind)
-        row.add_prefix(Gtk.Image.new_from_icon_name("folder-remote-symbolic"))
+    def _drive_row(self, drive, is_team) -> Adw.ActionRow:
+        subtitle = _("Team library") if is_team else drive.kind
+        row = Adw.ActionRow(title=drive.name, subtitle=subtitle)
+        icon = "system-users-symbolic" if is_team else "folder-remote-symbolic"
+        row.add_prefix(Gtk.Image.new_from_icon_name(icon))
 
         if self._mounts.is_mounted(self._mounts.mountpoint_for(drive.name)):
             button = Gtk.Button(label=_("Open"), valign=Gtk.Align.CENTER)
