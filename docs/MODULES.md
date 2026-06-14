@@ -9,12 +9,22 @@ Clouddrive's functionality is delivered by **modules**. A module is a self-
 contained Python package under `src/modules/` that implements the contracts in
 [`src/core/interfaces.py`](../src/core/interfaces.py).
 
+## One module = one provider = one account = one login
+
+A module represents a **provider the user signs into once**, surfacing every
+capability that login grants. A Microsoft 365 account is a single Graph OAuth
+token that provides OneDrive/SharePoint files **and** mail **and** calendar — so
+it is **one** `microsoft365` module implementing all three capabilities, not
+separate "OneDrive" and "Outlook" modules that would each demand their own
+login. The shell renders surfaces per *capability*; auth/token is shared across
+them. The same holds for Google (Gmail + Calendar = one `gmail` provider).
+
 ## Interfaces
 
 ```python
 class ServiceModule:
     """Base contract every module implements."""
-    id: str          # e.g. "onedrive"
+    id: str          # e.g. "microsoft365"
     name: str        # human-readable, translatable
     icon_name: str   # symbolic icon
 
@@ -56,9 +66,10 @@ same**, so this migration is internal.
 7. If the module supervises a host daemon, expose its status via
    `core.dbus_service` so the Nautilus extension can reflect it.
 
-## The OneDrive module specifically
+## The Microsoft 365 module specifically
 
-It is an orchestration layer, not a sync engine:
+It signs in once via Graph and exposes Files + Mail + Calendar. The **Files**
+capability (OneDrive/SharePoint) is an orchestration layer, not a sync engine:
 
 - **Selective sync** → `abraunegg/onedrive` (one client instance per SharePoint
   library; discover IDs with `onedrive --get-sharepoint-drive-id 'Library'`).

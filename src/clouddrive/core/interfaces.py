@@ -36,7 +36,7 @@ class ServiceModule(ABC):
     Concrete modules also subclass one or more capability mix-ins below.
     """
 
-    #: short stable identifier, e.g. "onedrive"
+    #: short stable identifier, e.g. "microsoft365"
     id: str = ""
     #: human-readable, translatable display name
     name: str = ""

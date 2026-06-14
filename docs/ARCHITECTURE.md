@@ -23,7 +23,7 @@ class" module pattern.
                         │                                        │
    core/  ── module engine · account registry · secrets · auth   │
                         │                                        │
-   modules/ ─ onedrive · graph_mail · gmail · eds_reader (opt.)  │
+   modules/ ─ microsoft365 · gmail · eds_reader (opt.)           │
                         └───────────────┬────────────────────────┘
                                         │ D-Bus
             ┌───────────────────────────┴───────────────────────────┐
@@ -75,14 +75,19 @@ services / host extensions) and has the sandboxed UI talk to them over **D-Bus**
   and `google_oauth.py` (Google OAuth2 for Gmail). See [AUTH.md](AUTH.md).
 
 ### 3. Modules (`src/modules/`)
-Each module is a package implementing `ServiceModule` and one or more capability
-mix-ins:
-- **`onedrive/`** — wraps `abraunegg/onedrive` (selective sync, SharePoint/Teams,
-  share links), with `onedriver`/`rclone` as alternative on-demand modes. Config
-  generation + subprocess supervision + status parsing.
-- **`graph_mail/`** — Microsoft Graph mail/calendar/contacts (the future-proof
-  Exchange path; EWS is retired 2027).
-- **`gmail/`** — Gmail REST API + Google Calendar.
+**A module is a provider = one account = one login.** It implements
+`ServiceModule` plus one or more capability mix-ins, and surfaces *all* of them
+from a single authentication. The shell renders surfaces per capability, not per
+module.
+
+- **`microsoft365/`** — one Microsoft Graph login surfacing three capabilities:
+  Files (OneDrive/SharePoint/Teams), Mail, and Calendar. **OneDrive is the Files
+  capability, not a separate account.** Files orchestrates
+  `abraunegg/onedrive` (selective sync) + `onedriver`/`rclone` (on-demand);
+  mail/calendar use the shared Graph client. (`module.py` + `files.py` +
+  `graph.py` + `abraunegg.py`.)
+- **`gmail/`** — the Google provider: Gmail + Google Calendar from one Google
+  login.
 - **`eds_reader/`** (optional) — read calendars/contacts the user already
   configured in GNOME Online Accounts via Evolution Data Server.
 

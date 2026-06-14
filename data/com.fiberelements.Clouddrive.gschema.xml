@@ -22,7 +22,7 @@ SPDX-FileCopyrightText: 2026 Fiber Elements
     </key>
 
     <key name="enabled-modules" type="as">
-      <default>['onedrive']</default>
+      <default>['microsoft365']</default>
       <summary>Identifiers of enabled service modules</summary>
       <description>
         Which modules the module engine should activate at startup.

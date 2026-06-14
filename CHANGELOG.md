@@ -19,7 +19,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   auth, research).
 - Flatpak manifest targeting `org.gnome.Platform` 50.
 - Runnable Adwaita application shell (navigation split view) with a module
-  registry and stub OneDrive / Graph-mail / Gmail modules.
+  registry. Modules follow a provider model (one account = one login = many
+  capabilities): a `microsoft365` module surfaces OneDrive/SharePoint Files,
+  Mail and Calendar from one Graph login, plus a `gmail` provider stub.
 - Host-side Nautilus extension stub (`nautilus-python`, API 4.0).
 
 [Unreleased]: https://github.com/sha5b/Clouddrive-Fedora
