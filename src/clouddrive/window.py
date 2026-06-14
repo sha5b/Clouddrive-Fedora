@@ -2,9 +2,10 @@
 # SPDX-FileCopyrightText: 2026 Fiber Elements
 """The main application window, loaded from the Blueprint-compiled template."""
 
+import threading
 from gettext import gettext as _
 
-from gi.repository import Adw, Gio, Gtk
+from gi.repository import Adw, Gio, GLib, Gtk
 
 from .core.interfaces import capabilities_of
 
@@ -126,8 +127,48 @@ class ClouddriveWindow(Adw.ApplicationWindow):
         return status
 
     def _on_sign_in(self, account) -> None:
-        # TODO(stage 2): launch the Graph/Google OAuth flow for this account.
-        self.add_toast(_("Sign-in arrives in the next milestone."))
+        app = self.get_application()
+        if account.provider != "microsoft":
+            self.add_toast(_("Sign-in for this provider arrives later."))
+            return
+
+        client_id = app.microsoft_client_id()
+        if not client_id:
+            self.add_toast(
+                _("No Microsoft client ID configured — see docs/AUTH.md.")
+            )
+            return
+
+        self.add_toast(_("Opening your browser to sign in…"))
+        threading.Thread(
+            target=self._sign_in_worker, args=(account, client_id, app.secrets), daemon=True
+        ).start()
+
+    def _sign_in_worker(self, account, client_id, secrets) -> None:
+        from .core.auth.msal_graph import GraphAuth, SCOPES_BASE
+
+        try:
+            auth = GraphAuth(client_id, secrets, account.id)
+            result = auth.sign_in_interactive(SCOPES_BASE)
+            try:
+                upn = GraphAuth.fetch_userprincipalname(result["access_token"])
+            except Exception:  # noqa: BLE001 - identity lookup is best-effort
+                upn = None
+            GLib.idle_add(self._on_sign_in_result, account, upn, None)
+        except Exception as exc:  # noqa: BLE001 - surface any auth failure as a toast
+            GLib.idle_add(self._on_sign_in_result, account, None, str(exc))
+
+    def _on_sign_in_result(self, account, upn, error) -> bool:
+        if error:
+            self.add_toast(_("Sign-in failed: %s") % error)
+            return False
+        account.signed_in = True
+        if upn:
+            account.display_name = upn
+        self._registry.update(account)
+        self.add_toast(_("Signed in as %s") % account.display_name)
+        self._show_account(account)
+        return False
 
     # -- helpers ----------------------------------------------------------
     def add_toast(self, message: str) -> None:

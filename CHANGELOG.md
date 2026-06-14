@@ -23,5 +23,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   capabilities): a `microsoft365` module surfaces OneDrive/SharePoint Files,
   Mail and Calendar from one Graph login, plus a `gmail` provider stub.
 - Host-side Nautilus extension stub (`nautilus-python`, API 4.0).
+- Browser-based Microsoft Graph sign-in (MSAL interactive: system browser +
+  loopback PKCE), run off the UI thread; token cache persisted via libsecret;
+  the Sign In button flips the account to signed-in and shows the user's UPN.
+  Client ID is configurable (`microsoft-client-id` setting / `CLOUDDRIVE_MS_CLIENT_ID`).
 
 [Unreleased]: https://github.com/sha5b/Clouddrive-Fedora

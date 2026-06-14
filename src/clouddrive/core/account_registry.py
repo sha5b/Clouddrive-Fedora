@@ -80,6 +80,9 @@ class AccountRegistry(GObject.Object):
         self._save()
         self.emit("changed")
 
+    # Persist an in-place mutation of an existing account.
+    update = add
+
     def remove(self, account_id: str) -> None:
         if self._accounts.pop(account_id, None) is not None:
             self._save()

@@ -2,12 +2,14 @@
 # SPDX-FileCopyrightText: 2026 Fiber Elements
 """The Adw.Application subclass: actions, lifecycle, and the main window."""
 
+import os
 from gettext import gettext as _
 
 from gi.repository import Adw, Gio, Gtk
 
 from .core.account_registry import AccountRegistry
 from .core.plugin_engine import PluginEngine
+from .core.secrets import SecretStore
 from .window import ClouddriveWindow
 
 
@@ -24,10 +26,22 @@ class ClouddriveApplication(Adw.Application):
 
         # Core services, constructed once and shared with the window/modules.
         self.settings = Gio.Settings.new(application_id)
+        self.secrets = SecretStore()
         self.registry = AccountRegistry(self.settings)
         self.engine = PluginEngine(self.settings)
 
         self._setup_actions()
+
+    # -- OAuth client ids (env override wins over GSettings) -------------
+    def microsoft_client_id(self) -> str:
+        return os.environ.get("CLOUDDRIVE_MS_CLIENT_ID") or self.settings.get_string(
+            "microsoft-client-id"
+        )
+
+    def google_client_id(self) -> str:
+        return os.environ.get("CLOUDDRIVE_GOOGLE_CLIENT_ID") or self.settings.get_string(
+            "google-client-id"
+        )
 
     def _setup_actions(self) -> None:
         self._add_action("quit", self._on_quit, ["<primary>q"])

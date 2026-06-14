@@ -43,5 +43,24 @@ SPDX-FileCopyrightText: 2026 Fiber Elements
       </description>
     </key>
 
+    <key name="microsoft-client-id" type="s">
+      <default>''</default>
+      <summary>Microsoft Entra (Azure AD) public client/application ID</summary>
+      <description>
+        OAuth public client ID for Microsoft Graph sign-in. Ships empty; set to
+        the project's multi-tenant client ID, or override with the
+        CLOUDDRIVE_MS_CLIENT_ID environment variable. See docs/AUTH.md.
+      </description>
+    </key>
+
+    <key name="google-client-id" type="s">
+      <default>''</default>
+      <summary>Google OAuth client ID</summary>
+      <description>
+        OAuth client ID for Gmail/Calendar sign-in (override env:
+        CLOUDDRIVE_GOOGLE_CLIENT_ID). See docs/AUTH.md.
+      </description>
+    </key>
+
   </schema>
 </schemalist>

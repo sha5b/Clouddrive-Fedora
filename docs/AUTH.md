@@ -11,10 +11,19 @@ Tokens are stored via **libsecret**, never in plaintext.
 
 ## Microsoft Graph (Entra ID app registration)
 
-1. In the Microsoft Entra admin center, **register an application**.
-2. Add a **"Mobile and desktop applications"** platform with redirect URI
-   `https://login.microsoftonline.com/common/oauth2/nativeclient` (and/or a
-   loopback `http://localhost`). This is a **public client** — no client secret.
+> **For end users this is already done** — Clouddrive ships a multi-tenant
+> client ID, so signing in is one click (browser → consent). The steps below are
+> only for the project maintainer registering that shared app, or for users who
+> set `CLOUDDRIVE_MS_CLIENT_ID` / the `microsoft-client-id` setting to their own.
+
+1. In the Microsoft Entra admin center, **register an application**; set
+   **Supported account types** to *Accounts in any organizational directory and
+   personal Microsoft accounts* (multi-tenant).
+2. Add a **"Mobile and desktop applications"** platform with the loopback
+   redirect URI **`http://localhost`** (MSAL's interactive flow uses a loopback
+   server; also add
+   `https://login.microsoftonline.com/common/oauth2/nativeclient`). This is a
+   **public client** — no client secret.
 3. Enable **"Allow public client flows"**.
 4. Delegated scopes (request the subset each module needs):
    - Files: `Files.ReadWrite.All`, `Sites.ReadWrite.All`
