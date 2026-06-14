@@ -2,42 +2,140 @@
 # SPDX-FileCopyrightText: 2026 Fiber Elements
 """Microsoft Graph REST client shared by all Microsoft 365 capabilities.
 
-A single instance serves Files (drive enumeration), Mail, and Calendar from the
-same OAuth token, supplied lazily by ``token_provider(scopes)`` so the caller
-controls auth/refresh (see core.auth.msal_graph). Stage 0: endpoint surface and
-method outline; the requests land in stages 3 (files) and 6 (mail/calendar).
+A single instance serves Files (drive/site enumeration, share links), Mail, and
+Calendar from the same OAuth token, supplied lazily by ``token_provider(scopes)``
+so the caller controls auth/refresh (see core.auth.msal_graph).
+
+Files enumeration and share links are implemented here; mail/calendar land in
+stage 6.
 """
 
 from __future__ import annotations
 
+import json
+import urllib.error
+import urllib.parse
+import urllib.request
+from dataclasses import dataclass
 from typing import Callable, Sequence
+
+from ...core.auth.msal_graph import SCOPES_FILES
 
 BASE_URL = "https://graph.microsoft.com/v1.0"
 
 
+class GraphError(Exception):
+    pass
+
+
+@dataclass
+class Drive:
+    """A OneDrive/SharePoint drive (document library)."""
+
+    id: str
+    name: str
+    kind: str  # "personal" | "business" | "documentLibrary"
+    web_url: str
+    site_id: str = ""  # set for SharePoint/Teams libraries
+
+
 class GraphClient:
-    def __init__(self, token_provider: Callable[[Sequence[str]], str]):
+    def __init__(self, token_provider: Callable[[Sequence[str]], str | None]):
         self._token_provider = token_provider
 
-    # -- Files ------------------------------------------------------------
-    def list_drives(self) -> list:
-        # TODO(stage 3): GET /me/drives  (+ /sites/{id}/drives for SharePoint)
-        return []
+    # -- low-level --------------------------------------------------------
+    def _get(self, path: str, scopes: Sequence[str]) -> dict:
+        token = self._token_provider(scopes)
+        if not token:
+            raise GraphError("not signed in (no token for the requested scopes)")
+        url = path if path.startswith("http") else f"{BASE_URL}{path}"
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return json.loads(resp.read().decode())
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode(errors="replace")
+            raise GraphError(f"Graph {exc.code}: {detail}") from exc
 
-    # -- Mail -------------------------------------------------------------
+    def _post(self, path: str, body: dict, scopes: Sequence[str]) -> dict:
+        token = self._token_provider(scopes)
+        if not token:
+            raise GraphError("not signed in (no token for the requested scopes)")
+        url = f"{BASE_URL}{path}"
+        data = json.dumps(body).encode()
+        req = urllib.request.Request(
+            url,
+            data=data,
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return json.loads(resp.read().decode())
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode(errors="replace")
+            raise GraphError(f"Graph {exc.code}: {detail}") from exc
+
+    # -- Files: drives & sites -------------------------------------------
+    def list_drives(self) -> list[Drive]:
+        """The user's own drives (personal OneDrive / business)."""
+        data = self._get("/me/drives", SCOPES_FILES)
+        return [self._drive_from_json(d) for d in data.get("value", [])]
+
+    def search_sites(self, query: str) -> list[dict]:
+        """Search SharePoint sites (for Teams/SharePoint libraries)."""
+        q = urllib.parse.quote(query)
+        data = self._get(f"/sites?search={q}", SCOPES_FILES)
+        return [
+            {"id": s["id"], "name": s.get("displayName", s.get("name", "")),
+             "web_url": s.get("webUrl", "")}
+            for s in data.get("value", [])
+        ]
+
+    def site_by_path(self, hostname: str, site_path: str) -> dict:
+        """Resolve a site from a hostname + server-relative path."""
+        data = self._get(f"/sites/{hostname}:{site_path}", SCOPES_FILES)
+        return {"id": data["id"], "name": data.get("displayName", ""),
+                "web_url": data.get("webUrl", "")}
+
+    def list_site_drives(self, site_id: str) -> list[Drive]:
+        """Document libraries of a SharePoint site (Teams files live here)."""
+        data = self._get(f"/sites/{site_id}/drives", SCOPES_FILES)
+        drives = []
+        for d in data.get("value", []):
+            drive = self._drive_from_json(d)
+            drive.site_id = site_id
+            drives.append(drive)
+        return drives
+
+    def create_share_link(self, drive_id: str, item_id: str, *, editable: bool = False) -> str:
+        body = {"type": "edit" if editable else "view", "scope": "organization"}
+        data = self._post(
+            f"/drives/{drive_id}/items/{item_id}/createLink", body, SCOPES_FILES
+        )
+        return data.get("link", {}).get("webUrl", "")
+
+    @staticmethod
+    def _drive_from_json(d: dict) -> Drive:
+        return Drive(
+            id=d["id"],
+            name=d.get("name", d.get("driveType", "drive")),
+            kind=d.get("driveType", "documentLibrary"),
+            web_url=d.get("webUrl", ""),
+        )
+
+    # -- Mail / Calendar (stage 6) ---------------------------------------
     def list_mail_folders(self) -> list:
-        # TODO(stage 6): GET /me/mailFolders
         return []
 
     def list_messages(self, folder_id: str, *, limit: int = 50) -> list:
-        # TODO(stage 6): GET /me/mailFolders/{id}/messages?$top={limit}
         return []
 
-    # -- Calendar ---------------------------------------------------------
     def list_calendars(self) -> list:
-        # TODO(stage 6): GET /me/calendars
         return []
 
     def list_events(self, calendar_id: str, start, end) -> list:
-        # TODO(stage 6): GET /me/calendars/{id}/calendarView?startDateTime&endDateTime
         return []

@@ -27,5 +27,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   loopback PKCE), run off the UI thread; token cache persisted via libsecret;
   the Sign In button flips the account to signed-in and shows the user's UPN.
   Client ID is configurable (`microsoft-client-id` setting / `CLOUDDRIVE_MS_CLIENT_ID`).
+- Files surface: enumerate OneDrive/SharePoint drives via Graph; mount a library
+  (rclone/onedriver) so it appears in the Nautilus sidebar (auto-added GTK
+  bookmark), network-drive style; "Open in Files". Backend auto-detected with a
+  clear prompt to install rclone/onedriver when absent. Sign-in now requests
+  Files scopes so file access works without a second consent.
 
 [Unreleased]: https://github.com/sha5b/Clouddrive-Fedora
