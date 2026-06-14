@@ -1,19 +1,14 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # SPDX-FileCopyrightText: 2026 Fiber Elements
-"""Cloudy Nautilus extension (host-side, nautilus-python API 4.0 / GTK4).
+"""Cloudy Nautilus extension (host-side, nautilus-python 4.x / GTK4).
 
 Runs in the HOST Nautilus process (not the Flatpak sandbox). It talks to the
-Cloudy app over D-Bus (com.fiberelements.Cloudy, see
-cloudy.core.dbus_service) to:
-  * draw per-file sync-status emblems (InfoProvider), and
-  * add right-click controls (MenuProvider): Sync this folder / Free up space /
-    Copy share link.
+Cloudy app over D-Bus (com.fiberelements.Cloudy, see cloudy.core.dbus_service)
+to add right-click controls (MenuProvider): Sync this folder / Free up space /
+Copy share link.
 
 Install to ~/.local/share/nautilus-python/extensions/ and run `nautilus -q`.
 Requires the python3-nautilus (4.x) bindings.
-
-API 4.0 notes: MenuProvider.get_file_items(files) takes no window argument;
-PropertyPageProvider was replaced by PropertiesModelProvider.
 
 All D-Bus calls are best-effort: if the app is not running they fail quietly,
 so the extension never breaks the file manager.
@@ -21,18 +16,21 @@ so the extension never breaks the file manager.
 
 import gi
 
-gi.require_version("Nautilus", "4.0")
+# Nautilus loads its own typelib before importing us, and the version varies by
+# distro (4.0 on some, 4.1 on others). Request whichever is present; if Nautilus
+# is already loaded, requiring the non-matching version raises — so we just try
+# the candidates and fall through (the import below uses the loaded version).
+for _ver in ("4.1", "4.0"):
+    try:
+        gi.require_version("Nautilus", _ver)
+        break
+    except ValueError:
+        continue
 from gi.repository import Gio, GLib, GObject, Nautilus  # noqa: E402
 
 BUS_NAME = "com.fiberelements.Cloudy"
 OBJECT_PATH = "/com/fiberelements/Cloudy/Sync"
 INTERFACE = "com.fiberelements.Cloudy.Sync"
-
-# Map service status -> Nautilus emblem name.
-_EMBLEMS = {
-    "synced": "emblem-default",
-    "offline": "emblem-synchronizing",
-}
 
 _DBUS_TIMEOUT_MS = 400
 
@@ -66,22 +64,6 @@ def _call(method, variant, reply_type):
 def _path_of(file):
     location = file.get_location()
     return location.get_path() if location else None
-
-
-class CloudyInfoProvider(GObject.GObject, Nautilus.InfoProvider):
-    """Per-file sync-status emblems."""
-
-    def update_file_info(self, file):
-        path = _path_of(file)
-        if not path:
-            return Nautilus.OperationResult.COMPLETE
-        result = _call("StatusForPath", GLib.Variant("(s)", (path,)), "(s)")
-        if result is not None:
-            (status,) = result.unpack()
-            emblem = _EMBLEMS.get(status)
-            if emblem:
-                file.add_emblem(emblem)
-        return Nautilus.OperationResult.COMPLETE
 
 
 class CloudyMenuProvider(GObject.GObject, Nautilus.MenuProvider):

@@ -12,3 +12,13 @@ install_data(
   symbolic_dir / '@0@-symbolic.svg'.format(application_id),
   install_dir: datadir / 'icons' / symbolic_dir,
 )
+
+# Raster sizes for environments that prefer PNGs (taskbars, some shells, and
+# Flathub's icon validation). Rendered from the scalable SVG.
+foreach size : ['48', '64', '128', '256', '512']
+  png_dir = 'hicolor' / '@0@x@0@'.format(size) / 'apps'
+  install_data(
+    png_dir / '@0@.png'.format(application_id),
+    install_dir: datadir / 'icons' / png_dir,
+  )
+endforeach

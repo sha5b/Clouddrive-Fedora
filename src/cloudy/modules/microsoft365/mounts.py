@@ -58,6 +58,14 @@ def sync_root() -> Path:
     return _data_dir() / "synced"
 
 
+def account_mount_base(mount_location: str) -> Path | None:
+    """Resolve an account's mount base: its own folder when the layout is
+    'individual' and an override is set, otherwise None (use the default root)."""
+    if _setting("mount-layout", "one-folder") == "individual" and mount_location:
+        return Path(mount_location)
+    return None
+
+
 def cache_mode() -> str:
     return _setting("cache-mode", "full") or "full"
 
@@ -117,8 +125,10 @@ class MountManager:
     def _safe_name(name: str) -> str:
         return "".join(c if c.isalnum() or c in "-_ " else "_" for c in name).strip()
 
-    def mountpoint_for(self, name: str) -> Path:
-        return mount_root() / self._safe_name(name)
+    def mountpoint_for(self, name: str, base: Path | None = None) -> Path:
+        """Mountpoint for a library. ``base`` overrides the global mount root
+        (used for per-account mount locations); falls back to ``mount_root()``."""
+        return (base or mount_root()) / self._safe_name(name)
 
     def is_mounted(self, mountpoint: Path) -> bool:
         # os.path.ismount is true for an active FUSE mount.
@@ -237,14 +247,14 @@ class MountManager:
 
     # -- mount / unmount --------------------------------------------------
     def mount(self, *, name: str, remote: str, backend: Backend | None = None,
-              drive_id: str = "") -> MountInfo:
+              drive_id: str = "", base: Path | None = None) -> MountInfo:
         backend = backend or self.preferred_backend()
         if backend is None:
             raise RuntimeError(
                 "No mount backend found. Install rclone or onedriver "
                 "(see docs/BUILDING.md)."
             )
-        mountpoint = self.mountpoint_for(name)
+        mountpoint = self.mountpoint_for(name, base)
         mountpoint.mkdir(parents=True, exist_ok=True)
 
         if not self.is_mounted(mountpoint):

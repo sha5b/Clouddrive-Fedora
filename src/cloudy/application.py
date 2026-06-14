@@ -5,7 +5,7 @@
 import os
 from gettext import gettext as _
 
-from gi.repository import Adw, Gio, Gtk
+from gi.repository import Adw, Gio, GLib, Gtk
 
 from .core.account_registry import AccountRegistry
 from .core.cache import MemoryCache
@@ -20,7 +20,9 @@ class CloudyApplication(Adw.Application):
     def __init__(self, application_id: str, version: str):
         super().__init__(
             application_id=application_id,
-            flags=Gio.ApplicationFlags.DEFAULT_FLAGS,
+            # HANDLES_OPEN so we can act as the system Mail/Calendar handler:
+            # mailto: URIs and .ics/webcal files are delivered to do_open().
+            flags=Gio.ApplicationFlags.HANDLES_OPEN,
         )
         self.version = version
         self.application_id = application_id
@@ -35,6 +37,10 @@ class CloudyApplication(Adw.Application):
         from .core.sync import SyncManager
 
         self.sync_manager = SyncManager(self)
+
+        from .core.notifications import NotificationManager
+
+        self.notifier = NotificationManager(self)
 
         self._setup_actions()
 
@@ -59,6 +65,14 @@ class CloudyApplication(Adw.Application):
         self._add_action("about", self._on_about)
         self._add_action("preferences", self._on_preferences, ["<primary>comma"])
         self._add_action("add-account", self._on_add_account)
+        # Notification deep-links carry a string target.
+        self._add_target_action("notify-open-mail", self._on_notify_open_mail)
+        self._add_target_action("notify-open-calendar", self._on_notify_open_calendar)
+
+    def _add_target_action(self, name, callback):
+        action = Gio.SimpleAction.new(name, GLib.VariantType.new("s"))
+        action.connect("activate", callback)
+        self.add_action(action)
 
     def _add_action(self, name, callback, accels=None):
         action = Gio.SimpleAction.new(name, None)
@@ -116,11 +130,93 @@ class CloudyApplication(Adw.Application):
         if not window:
             window = CloudyWindow(application=self)
         window.present()
+        # Coming back to the foreground: drop the background hold (the visible
+        # window keeps the app alive from here).
+        if getattr(self, "_held", False):
+            self.release()
+            self._held = False
         if not getattr(self, "_sync_started", False):
             self._sync_started = True
             self.sync_manager.start()
+            self.notifier.start()
+
+    # -- run in background ------------------------------------------------
+    def wants_background(self) -> bool:
+        try:
+            return self.settings.get_boolean("run-in-background")
+        except Exception:  # noqa: BLE001
+            return False
+
+    def enter_background(self, window) -> None:
+        """Hide the window but keep the app (and its pollers) running."""
+        window.set_visible(False)
+        if not getattr(self, "_held", False):
+            self.hold()  # survive having no visible window
+            self._held = True
+        self._request_portal_background()
+
+    def _request_portal_background(self) -> None:
+        # Best-effort: ask the desktop portal to allow running in the background
+        # (and list us in GNOME's "Background Apps"). Harmless if unavailable.
+        if getattr(self, "_portal_asked", False):
+            return
+        self._portal_asked = True
+        try:
+            from .core.gi_compat import require
+
+            if require("Xdp", ("1.0",)) is None:
+                return  # no portal backend on this runtime
+            from gi.repository import Xdp
+
+            portal = Xdp.Portal.new()
+            portal.request_background(
+                None, _("Keep mail and calendar up to date"),
+                ["cloudy", "--gapplication-service"],
+                Xdp.BackgroundFlags.NONE, None, None, None)
+        except Exception as exc:  # noqa: BLE001 - never block on the portal
+            print(f"[background] portal request skipped: {exc}")
+
+    def do_open(self, files, _n_files, _hint):
+        # Invoked when launched as the default Mail/Calendar app. Ensure a window
+        # exists, then route each argument by scheme/type.
+        self.activate()
+        window = self.props.active_window
+        if window is None:
+            return
+        for gfile in files:
+            uri = gfile.get_uri() or ""
+            if uri.startswith("mailto:"):
+                window.open_compose_from_mailto(uri)
+            elif uri.startswith("webcal:"):
+                # A remote calendar subscription; hand off to the browser/portal.
+                window.open_uri("https" + uri[len("webcal"):])
+            else:
+                path = gfile.get_path()
+                if path and path.lower().endswith(".ics"):
+                    window.open_event_from_ics(path)
 
     # -- Action handlers --------------------------------------------------
+    def _on_notify_open_mail(self, _action, param):
+        self.activate()
+        window = self.props.active_window
+        if window is None:
+            return
+        account_id, _sep, mid = param.get_string().partition("\x1f")
+        account = self.registry.get(account_id)
+        if account is not None and mid:
+            window.open_mail(account, mid)
+        window.present()
+
+    def _on_notify_open_calendar(self, _action, param):
+        self.activate()
+        window = self.props.active_window
+        if window is None:
+            return
+        account = self.registry.get(param.get_string())
+        if account is not None:
+            window.open_account_tab(account, "calendar")
+        window.present()
+
     def _on_quit(self, *_args):
         self.quit()
 

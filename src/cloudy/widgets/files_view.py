@@ -1,21 +1,24 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # SPDX-FileCopyrightText: 2026 Fiber Elements
-"""Files surface (provider-aware).
+"""Files surface: a two-pane browser (like Mail and Calendar).
 
-Microsoft 365: your OneDrive drives + the Teams you belong to (team level).
-Google: your Google Drive (My Drive). Each library mounts via rclone and shows
-in the Files sidebar like a network drive.
+Left pane = your libraries (OneDrive drives + Teams, or Google My Drive), each
+with a Mount/Unmount button. Mounting makes the library a real FUSE network
+drive (it also appears in the system Files sidebar). Clicking a *mounted*
+library loads it into the right pane — a Nautilus-style file/folder browser
+(``widgets/file_browser.FileBrowserPane``).
 """
 
 from __future__ import annotations
 
-import threading
 from gettext import gettext as _
 
-from gi.repository import Adw, GLib, Gtk
+from gi.repository import Adw, Gtk
 
 from ..modules.microsoft365.graph import Drive
-from ..modules.microsoft365.mounts import MountManager
+from ..modules.microsoft365.mounts import MountManager, account_mount_base
+from .file_browser import FileBrowserPane
+from .source_nav import clear_listbox, is_scope_error, message_row, run_async
 
 
 class FilesView(Adw.Bin):
@@ -26,146 +29,179 @@ class FilesView(Adw.Bin):
         self._window = window
         self._account = account
         self._mounts = MountManager()
-        self._rows: dict = {}  # name -> [row, button, base_subtitle]
+        self._libraries: list[dict] = []   # [{drive, icon, subtitle}]
+        self._rows: dict = {}              # drive name -> [row, button]
+        self._open_name = None             # which library is shown in the pane
 
-        self._page = Adw.PreferencesPage()
-        self.set_child(self._page)
+        # -- left pane: libraries + mount buttons ------------------------
+        self._list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.SINGLE,
+                                 valign=Gtk.Align.START)
+        self._list.add_css_class("navigation-sidebar")
+        self._list.connect("row-activated", self._on_row_activated)
+        list_scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER,
+                                         vexpand=True, child=self._list)
+        sidebar_tb = Adw.ToolbarView()
+        sidebar_tb.add_top_bar(Adw.HeaderBar(
+            show_start_title_buttons=False, show_end_title_buttons=False,
+            title_widget=Gtk.Label(label=_("Libraries"))))
+        sidebar_tb.set_content(list_scroll)
+        sidebar_page = Adw.NavigationPage(title=_("Libraries"), tag="libraries")
+        sidebar_page.set_child(sidebar_tb)
 
-        self._backend_group = Adw.PreferencesGroup(title=_("Storage backend"))
-        self._page.add(self._backend_group)
-        self._show_backend_status()
+        # -- right pane: the file browser --------------------------------
+        self._pane = FileBrowserPane(window)
+        self._pane.show_placeholder(_("Mount a library, then click it to browse."))
+        content_page = Adw.NavigationPage(title=_("Files"), tag="browser")
+        content_page.set_child(self._pane)
 
-        if account.provider == "google":
-            self._build_google()
-        else:
-            self._build_microsoft()
+        self._split = Adw.NavigationSplitView(
+            min_sidebar_width=280, max_sidebar_width=420, sidebar_width_fraction=0.32)
+        self._split.set_sidebar(sidebar_page)
+        self._split.set_content(content_page)
+        self.set_child(self._split)
 
-    # -- backend status ---------------------------------------------------
-    def _show_backend_status(self) -> None:
-        backend = self._mounts.preferred_backend()
-        if backend is not None:
-            row = Adw.ActionRow(
-                title=_("Mounting via %s") % backend.name,
-                subtitle=_("Libraries you mount appear in the Files sidebar."),
-            )
-            row.add_prefix(Gtk.Image.new_from_icon_name("emblem-ok-symbolic"))
-        else:
-            row = Adw.ActionRow(
-                title=_("No mount backend found"),
-                subtitle=_("Install rclone or onedriver to mount libraries."),
-            )
-            row.add_prefix(Gtk.Image.new_from_icon_name("dialog-warning-symbolic"))
-        self._backend_group.add(row)
+        self._set_message(_("Loading libraries…"))
+        self._load_libraries()
 
-    # -- Google -----------------------------------------------------------
-    def _build_google(self) -> None:
-        group = Adw.PreferencesGroup(
-            title=_("Google Drive"),
-            description=_("Mount to open it in Files like a network drive."),
-        )
-        self._page.add(group)
-        my_drive = Drive(id="", name="My Drive", kind="google_mydrive", web_url="")
-        group.add(self._drive_row(my_drive, "folder-symbolic", _("Google Drive")))
+    # -- list helpers -----------------------------------------------------
+    def _set_message(self, text: str) -> None:
+        clear_listbox(self._list)
+        self._list.append(message_row(text))
 
-    # -- Microsoft --------------------------------------------------------
-    def _build_microsoft(self) -> None:
-        self._drives_group = Adw.PreferencesGroup(
-            title=_("Your OneDrive"),
-            description=_("Mount a library to open it in Files like a network drive."),
-        )
-        self._page.add(self._drives_group)
-        self._drives_loading = Adw.ActionRow(title=_("Loading libraries…"))
-        self._drives_group.add(self._drives_loading)
+    def _mount_base(self):
+        return account_mount_base(self._account.mount_location)
 
-        self._teams_group = Adw.PreferencesGroup(
-            title=_("Teams"),
-            description=_("Document libraries of the Teams you belong to."),
-        )
-        self._page.add(self._teams_group)
-        self._teams_loading = Adw.ActionRow(title=_("Loading Teams…"))
-        self._teams_group.add(self._teams_loading)
+    def _is_mounted(self, drive) -> bool:
+        return self._mounts.is_mounted(
+            self._mounts.mountpoint_for(drive.name, self._mount_base()))
 
-        self._load_microsoft_async()
+    # -- load library list -----------------------------------------------
+    def _libraries_key(self) -> str:
+        return f"{self._account.id}:libraries"
 
-    def _load_microsoft_async(self) -> None:
-        def worker():
+    def _load_libraries(self) -> None:
+        if self._account.provider == "google":
+            my = Drive(id="", name="My Drive", kind="google_mydrive", web_url="")
+            self._libraries = [{"drive": my, "icon": "folder-symbolic",
+                                "subtitle": _("Google Drive")}]
+            self._render_list()
+            return
+
+        # Stale-while-revalidate: show cached libraries instantly (drive/team
+        # enumeration is an N+1 round-trip, so without this it's slow every
+        # time the Files tab is rebuilt), then refresh in the background.
+        cached = self._window.get_application().cache.get(self._libraries_key())
+        if cached is not None:
+            self._libraries = cached[0]
+            self._render_list()
+            if cached[1]:
+                return
+
+        def work():
             from .graph_helper import build_graph_client
 
-            try:
-                graph = build_graph_client(self._window.get_application(), self._account)
-            except Exception as exc:  # noqa: BLE001
-                GLib.idle_add(self._fill, self._drives_group, self._drives_loading, None, str(exc), False)
-                GLib.idle_add(self._fill, self._teams_group, self._teams_loading, None, str(exc), True)
-                return
-            try:
-                drives = graph.list_drives()
-                GLib.idle_add(self._fill, self._drives_group, self._drives_loading, drives, None, False)
-            except Exception as exc:  # noqa: BLE001
-                GLib.idle_add(self._fill, self._drives_group, self._drives_loading, None, str(exc), False)
-            try:
-                teams = graph.list_teams()
-                GLib.idle_add(self._fill, self._teams_group, self._teams_loading, teams, None, True)
-            except Exception as exc:  # noqa: BLE001
-                GLib.idle_add(self._fill, self._teams_group, self._teams_loading, None, str(exc), True)
+            graph = build_graph_client(self._window.get_application(), self._account)
 
-        threading.Thread(target=worker, daemon=True).start()
+            def safe(fn):
+                try:
+                    return (fn(), None)
+                except Exception as exc:  # noqa: BLE001
+                    return (None, str(exc))
 
-    def _fill(self, group, loading_row, drives, error, is_team) -> bool:
-        group.remove(loading_row)
-        if error:
-            if "no token" in error or "scope" in error.lower():
-                error = _(
-                    "New permission needed. Use the account menu (⋮) → "
-                    "“Sign Out / Re-sign In” to grant access."
-                )
-            group.add(Adw.ActionRow(title=_("Couldn't load"), subtitle=error))
+            return safe(graph.list_drives), safe(graph.list_teams)
+
+        run_async(work, self._on_ms_libraries)
+
+    def _on_ms_libraries(self, res, error) -> bool:
+        if error or not res:
+            if not self._libraries:  # keep any cached list on a refresh error
+                self._set_message(_("Couldn't load libraries: %s")
+                                  % (error or _("unknown error")))
             return False
-        if not drives:
-            empty = _("You don't belong to any Teams.") if is_team else _("No libraries found.")
-            group.add(Adw.ActionRow(title=empty))
+        (drives, derr), (teams, terr) = res
+        libs: list[dict] = []
+        for d in drives or []:
+            libs.append({"drive": d, "icon": "folder-remote-symbolic",
+                         "subtitle": d.kind})
+        for t in teams or []:
+            libs.append({"drive": t, "icon": "system-users-symbolic",
+                         "subtitle": _("Team library")})
+        err = derr or terr
+        if not libs and err:
+            if self._libraries:
+                return False  # keep cached render on a partial failure
+            if is_scope_error(err) or "scope" in err.lower():
+                err = _("New permission needed. Open Preferences → Accounts and "
+                        "“Sign Out / Re-sign In” to grant access.")
+            self._set_message(err)
             return False
-        icon = "system-users-symbolic" if is_team else "folder-remote-symbolic"
-        base = _("Team library") if is_team else None
-        for drive in drives:
-            group.add(self._drive_row(drive, icon, base or drive.kind))
+        self._libraries = libs
+        self._window.get_application().cache.set(self._libraries_key(), libs)
+        self._render_list()
         return False
 
-    # -- rows -------------------------------------------------------------
-    def _drive_row(self, drive, icon, base_subtitle) -> Adw.ActionRow:
+    def _render_list(self) -> None:
+        clear_listbox(self._list)
+        self._rows = {}
+        if not self._libraries:
+            self._set_message(_("No libraries found."))
+            return
+        for lib in self._libraries:
+            self._list.append(self._library_row(lib))
+
+    def _library_row(self, lib) -> Adw.ActionRow:
         from .format import esc
 
-        row = Adw.ActionRow(title=esc(drive.name))
-        row.add_prefix(Gtk.Image.new_from_icon_name(icon))
-        self._rows[drive.name] = [row, None, base_subtitle]
-        self._apply_button(drive)
+        drive = lib["drive"]
+        row = Adw.ActionRow(title=esc(drive.name), activatable=True)
+        row._lib = lib  # type: ignore[attr-defined]
+        row.add_prefix(Gtk.Image.new_from_icon_name(lib["icon"]))
+        self._rows[drive.name] = [row, None]
+        self._apply_button(lib)
         return row
 
-    def _apply_button(self, drive) -> None:
+    def _apply_button(self, lib) -> None:
         from .format import esc
 
+        drive = lib["drive"]
         entry = self._rows.get(drive.name)
         if entry is None:
             return
-        row, old_button, base_subtitle = entry
-        if old_button is not None:
-            row.remove(old_button)
-
-        mounted = self._mounts.is_mounted(self._mounts.mountpoint_for(drive.name))
+        row, old = entry
+        if old is not None:
+            row.remove(old)
         button = Gtk.Button(valign=Gtk.Align.CENTER)
-        if mounted:
-            row.set_subtitle(esc(_("Mounted · in the Files sidebar")))
-            button.set_label(_("Unmount"))
-            button.connect("clicked", lambda *_: self._unmount(drive))
+        if self._is_mounted(drive):
+            row.set_subtitle(esc(_("Mounted · click to browse")))
+            button.set_icon_name("media-eject-symbolic")
+            button.set_tooltip_text(_("Unmount"))
+            button.connect("clicked", lambda *_: self._unmount(lib))
         else:
-            row.set_subtitle(esc(base_subtitle))
+            row.set_subtitle(esc(lib["subtitle"]))
             button.set_label(_("Mount"))
             button.add_css_class("suggested-action")
-            button.connect("clicked", lambda *_: self._mount(drive))
+            button.connect("clicked", lambda *_: self._mount(lib))
+        button.add_css_class("flat")
         row.add_suffix(button)
         entry[1] = button
 
+    # -- selection --------------------------------------------------------
+    def _on_row_activated(self, _list, row) -> None:
+        lib = getattr(row, "_lib", None)
+        if lib is None:
+            return
+        drive = lib["drive"]
+        if not self._is_mounted(drive):
+            self._window.add_toast(_("Mount %s first.") % drive.name)
+            return
+        self._open_name = drive.name
+        mp = self._mounts.mountpoint_for(drive.name, self._mount_base())
+        self._pane.open_root(mp, drive.name)
+        self._split.set_show_content(True)  # reveal the browser when collapsed
+
     # -- mount / unmount --------------------------------------------------
-    def _mount(self, drive) -> None:
+    def _mount(self, lib) -> None:
+        drive = lib["drive"]
         if self._mounts.preferred_backend() is None:
             self._window.add_toast(_("No mount backend available."))
             return
@@ -175,59 +211,57 @@ class FilesView(Adw.Bin):
         token = secrets.lookup(self._account.id, token_kind)
         if not token:
             self._window.add_toast(_("Opening your browser to connect…"))
-        threading.Thread(
-            target=self._mount_worker, args=(drive, secrets, token, token_kind, google),
-            daemon=True,
-        ).start()
 
-    def _mount_worker(self, drive, secrets, token, token_kind, google) -> None:
-        try:
+        base = self._mount_base()
+
+        def work():
             backend = "drive" if google else "onedrive"
-            if not token:
-                token = self._mounts.authorize(backend)
-                secrets.store(self._account.id, token_kind, token)
-
+            tok = token
+            if not tok:
+                tok = self._mounts.authorize(backend)
+                secrets.store(self._account.id, token_kind, tok)
             remote = self._mounts._safe_name(drive.name)
             if google:
-                opts = {"token": token, "scope": "drive"}
+                opts = {"token": tok, "scope": "drive"}
             else:
                 opts = {
-                    "token": token,
+                    "token": tok,
                     "drive_id": drive.id,
                     "drive_type": self._mounts.drive_type_for(drive.kind),
                 }
             self._mounts.create_remote(remote, backend, opts)
-            info = self._mounts.mount(name=drive.name, remote=remote, drive_id=drive.id)
-            GLib.idle_add(self._on_mounted, drive, info, None)
-        except Exception as exc:  # noqa: BLE001
-            GLib.idle_add(self._on_mounted, drive, None, str(exc))
+            return self._mounts.mount(name=drive.name, remote=remote,
+                                      drive_id=drive.id, base=base)
 
-    def _on_mounted(self, drive, info, error) -> bool:
+        run_async(work, lambda info, error: self._on_mounted(lib, info, error))
+
+    def _on_mounted(self, lib, info, error) -> bool:
         if error:
             self._window.add_toast(_("Mount failed: %s") % error)
             return False
-        self._apply_button(drive)
-        self._window.add_toast(
-            _("%s is now in your Files sidebar.") % drive.name
-            if info and info.active
-            else _("Mount requested for %s.") % drive.name
-        )
+        self._apply_button(lib)
+        self._window.add_toast(_("%s is ready.") % lib["drive"].name)
+        # Open it straight away for a one-click feel.
+        self._open_name = lib["drive"].name
+        mp = self._mounts.mountpoint_for(lib["drive"].name, self._mount_base())
+        self._pane.open_root(mp, lib["drive"].name)
+        self._split.set_show_content(True)
         return False
 
-    def _unmount(self, drive) -> None:
-        def worker():
-            try:
-                self._mounts.unmount(self._mounts.mountpoint_for(drive.name))
-                GLib.idle_add(self._on_unmounted, drive, None)
-            except Exception as exc:  # noqa: BLE001
-                GLib.idle_add(self._on_unmounted, drive, str(exc))
+    def _unmount(self, lib) -> None:
+        mountpoint = self._mounts.mountpoint_for(lib["drive"].name, self._mount_base())
+        run_async(
+            lambda: self._mounts.unmount(mountpoint),
+            lambda _r, error: self._on_unmounted(lib, error),
+        )
 
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _on_unmounted(self, drive, error) -> bool:
+    def _on_unmounted(self, lib, error) -> bool:
         if error:
             self._window.add_toast(_("Unmount failed: %s") % error)
             return False
-        self._apply_button(drive)
-        self._window.add_toast(_("Unmounted %s.") % drive.name)
+        self._apply_button(lib)
+        if self._open_name == lib["drive"].name:
+            self._open_name = None
+            self._pane.show_placeholder(_("Mount a library, then click it to browse."))
+        self._window.add_toast(_("Unmounted %s.") % lib["drive"].name)
         return False

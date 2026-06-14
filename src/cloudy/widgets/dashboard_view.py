@@ -2,17 +2,28 @@
 # SPDX-FileCopyrightText: 2026 Fiber Elements
 """Dashboard: everything at a glance across all signed-in accounts.
 
-Merges calendar events from every account into one timeline, and groups recent
-mail by account (unread first), so the user sees their whole day in one view.
+A two-pane surface (like Mail/Calendar): the left pane is a section switcher with
+live counts (Today / Calendar / Mail / Files / Pinned); the right pane shows the
+selected section. **Today** leads with at-a-glance stat cards (unread, events
+today, the next event with a countdown, mounted libraries) plus short previews.
 """
 
 from __future__ import annotations
 
-import threading
+import os
 from datetime import datetime, timedelta, timezone
 from gettext import gettext as _
+from pathlib import Path
 
-from gi.repository import Adw, GLib, Gtk
+from gi.repository import Adw, Gio, GLib, Gtk, Pango
+
+from ..modules.microsoft365.mounts import (
+    account_mount_base,
+    mount_root,
+    sync_root,
+)
+from .file_browser import recent_changes
+from .source_nav import run_async
 
 
 class DashboardView(Adw.Bin):
@@ -22,45 +33,100 @@ class DashboardView(Adw.Bin):
         super().__init__()
         self._window = window
         self._registry = window.get_application().registry
+        self._data: dict = {}
+        self._section = "today"
+        self._section_rows: dict = {}
 
-        self._page = Adw.PreferencesPage()
-        self.set_child(self._page)
+        # -- left pane: section switcher with counts ---------------------
+        self._list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.SINGLE)
+        self._list.add_css_class("navigation-sidebar")
+        self._list.connect("row-activated", self._on_section_activated)
+        sidebar_tb = Adw.ToolbarView()
+        sidebar_tb.add_top_bar(Adw.HeaderBar(
+            show_start_title_buttons=False, show_end_title_buttons=False,
+            title_widget=Gtk.Label(label=_("Overview"))))
+        sidebar_tb.set_content(Gtk.ScrolledWindow(
+            hscrollbar_policy=Gtk.PolicyType.NEVER, vexpand=True, child=self._list))
+        sidebar_page = Adw.NavigationPage(title=_("Overview"), tag="sections")
+        sidebar_page.set_child(sidebar_tb)
 
-        self._cal_group = Adw.PreferencesGroup(
-            title=_("Upcoming"), description=_("All calendars, next 7 days.")
-        )
-        self._page.add(self._cal_group)
-        self._cal_loading = Adw.ActionRow(title=_("Loading calendars…"))
-        self._cal_group.add(self._cal_loading)
+        # -- right pane: the selected section ----------------------------
+        self._content = Adw.Bin()
+        self._content_header = Adw.HeaderBar(
+            show_start_title_buttons=False, show_end_title_buttons=False)
+        self._content_title = Adw.WindowTitle(title=_("Today"), subtitle="")
+        self._content_header.set_title_widget(self._content_title)
+        content_tb = Adw.ToolbarView()
+        content_tb.add_top_bar(self._content_header)
+        content_tb.set_content(self._content)
+        content_page = Adw.NavigationPage(title=_("Today"), tag="section")
+        content_page.set_child(content_tb)
 
-        self._mail_group = Adw.PreferencesGroup(
-            title=_("Recent mail"), description=_("Across all your accounts.")
-        )
-        self._page.add(self._mail_group)
-        self._mail_loading = Adw.ActionRow(title=_("Loading mail…"))
-        self._mail_group.add(self._mail_loading)
+        self._split = Adw.NavigationSplitView(
+            min_sidebar_width=240, max_sidebar_width=320, sidebar_width_fraction=0.28)
+        self._split.set_sidebar(sidebar_page)
+        self._split.set_content(content_page)
+        self.set_child(self._split)
 
+        engine = window.get_application().engine
         self._accounts = [
             a for a in self._registry.accounts()
             if a.signed_in and a.provider in ("microsoft", "google")
+            and engine.is_enabled(a.module_id)
         ]
+        self._build_sections()
         if not self._accounts:
-            self._cal_group.remove(self._cal_loading)
-            self._mail_group.remove(self._mail_loading)
-            self._page.add(self._empty_group())
+            self._content.set_child(Adw.StatusPage(
+                icon_name="dialog-information-symbolic",
+                title=_("Nothing to show yet"),
+                description=_("Sign in to an account to see your day here.")))
             return
-
+        self._content.set_child(self._spinner(_("Loading your day…")))
         self._load_async()
 
-    def _empty_group(self) -> Adw.PreferencesGroup:
-        group = Adw.PreferencesGroup()
-        group.add(
-            Adw.ActionRow(
-                title=_("Nothing to show yet"),
-                subtitle=_("Sign in to an account to see your day here."),
-            )
-        )
-        return group
+    # -- sections sidebar -------------------------------------------------
+    def _sections(self) -> list:
+        secs = [
+            ("today", _("Today"), "go-home-symbolic"),
+            ("calendar", _("Calendar"), "x-office-calendar-symbolic"),
+            ("mail", _("Mail"), "mail-unread-symbolic"),
+            ("files", _("Files"), "folder-symbolic"),
+        ]
+        if any(a.pinned_sources for a in self._accounts):
+            secs.append(("pinned", _("Pinned"), "starred-symbolic"))
+        return secs
+
+    def _build_sections(self) -> None:
+        child = self._list.get_first_child()
+        while child is not None:
+            nxt = child.get_next_sibling()
+            self._list.remove(child)
+            child = nxt
+        self._section_rows = {}
+        for key, title, icon in self._sections():
+            row = Adw.ActionRow(title=title)
+            row.add_prefix(Gtk.Image.new_from_icon_name(icon))
+            badge = Gtk.Label()
+            badge.add_css_class("dim-label")
+            badge.add_css_class("numeric")
+            row.add_suffix(badge)
+            row._section = key  # type: ignore[attr-defined]
+            row._badge = badge  # type: ignore[attr-defined]
+            self._list.append(row)
+            self._section_rows[key] = row
+            if key == self._section:
+                self._list.select_row(row)
+
+    def _on_section_activated(self, _list, row) -> None:
+        section = getattr(row, "_section", None)
+        if section and section != self._section:
+            self._section = section
+            self._render_section()
+
+    def _set_badge(self, key: str, count: int) -> None:
+        row = self._section_rows.get(key)
+        if row is not None:
+            row._badge.set_text(str(count) if count else "")
 
     # -- aggregation (off the UI thread) ---------------------------------
     def _load_async(self) -> None:
@@ -69,46 +135,324 @@ class DashboardView(Adw.Bin):
         end_iso = (now + timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
         accounts = list(self._accounts)
 
-        def worker():
+        def work():
             from .clients import build_account_client
 
-            events, messages = [], []
+            app = self._window.get_application()
+            events, messages, pinned = [], [], []
             for account in accounts:
                 try:
-                    client = build_account_client(
-                        self._window.get_application(), account
-                    )
+                    client = build_account_client(app, account)
+                except Exception:  # noqa: BLE001
+                    continue
+                try:
                     for ev in client.list_events(start_iso, end_iso):
                         events.append((account, ev))
                     for msg in client.list_messages():
                         messages.append((account, msg))
                 except Exception:  # noqa: BLE001 - one bad account shouldn't blank the view
-                    continue
+                    pass
+                for p in account.pinned_sources or []:
+                    pinned.append((account, p, self._pin_detail(client, p, start_iso, end_iso)))
             events.sort(key=lambda pair: pair[1].get("start", ""))
-            # Unread first, then newest.
-            messages.sort(
-                key=lambda pair: (pair[1].get("is_read", True), ),
-            )
-            GLib.idle_add(self._populate, events, messages)
+            messages.sort(key=lambda pair: (pair[1].get("is_read", True),))
+            files = recent_changes(self._scan_roots(accounts))
+            return {"events": events, "messages": messages, "pinned": pinned,
+                    "files": files, "mounted": self._count_mounted(accounts)}
 
-        threading.Thread(target=worker, daemon=True).start()
+        run_async(work, lambda res, _error: self._on_loaded(res or {}))
 
-    def _populate(self, events, messages) -> bool:
-        self._cal_group.remove(self._cal_loading)
-        self._mail_group.remove(self._mail_loading)
+    @staticmethod
+    def _count_mounted(accounts) -> int:
+        roots = {mount_root()}
+        for account in accounts:
+            base = account_mount_base(account.mount_location)
+            if base is not None:
+                roots.add(base)
+        mounted = 0
+        for root in roots:
+            try:
+                for child in Path(root).iterdir():
+                    if child.is_dir() and os.path.ismount(child):
+                        mounted += 1
+            except OSError:
+                continue
+        return mounted
 
-        if not events:
-            self._cal_group.add(Adw.ActionRow(title=_("No upcoming events.")))
-        for account, ev in events[:20]:
-            self._cal_group.add(self._event_row(account, ev))
+    @staticmethod
+    def _pin_detail(client, pin, start_iso, end_iso) -> str:
+        try:
+            if pin["kind"] == "calendar":
+                if pin["source"] == "teams":
+                    evs = client.list_group_events(pin["id"], start_iso, end_iso)
+                else:
+                    evs = client.list_shared_events(pin["id"], start_iso, end_iso)
+                return _("%d upcoming") % len(evs)
+            if pin["source"] == "teams":
+                msgs = client.list_messages(f"group:{pin['id']}")
+            else:
+                folders = client.list_shared_folders(pin["id"])
+                inbox = next((f for f in folders if f["name"].lower() == "inbox"),
+                             folders[0] if folders else None)
+                msgs = client.list_messages(inbox["id"]) if inbox else []
+            unread = sum(1 for m in msgs if not m.get("is_read", True))
+            return _("%d unread") % unread if unread else _("%d recent") % len(msgs)
+        except Exception:  # noqa: BLE001
+            return ""
 
-        if not messages:
-            self._mail_group.add(Adw.ActionRow(title=_("No recent mail.")))
-        for account, msg in messages[:20]:
-            self._mail_group.add(self._mail_row(account, msg))
+    def _scan_roots(self, accounts) -> list:
+        roots = [mount_root(), sync_root()]
+        for account in accounts:
+            base = account_mount_base(account.mount_location)
+            if base is not None:
+                roots.append(base)
+        return roots
+
+    def _on_loaded(self, data) -> bool:
+        self._data = data
+        self._set_badge("calendar", len(data.get("events", [])))
+        self._set_badge("mail", sum(
+            1 for _a, m in data.get("messages", []) if not m.get("is_read", True)))
+        self._set_badge("files", len(data.get("files", [])))
+        self._set_badge("pinned", len(data.get("pinned", [])))
+        self._render_section()
         return False
 
+    # -- section rendering ------------------------------------------------
+    def _render_section(self) -> None:
+        titles = {"today": _("Today"), "calendar": _("Upcoming"),
+                  "mail": _("Recent mail"), "files": _("File changes"),
+                  "pinned": _("Pinned")}
+        self._content_title.set_title(titles.get(self._section, _("Overview")))
+        self._content_title.set_subtitle(datetime.now().strftime("%A, %d %B"))
+        builder = {
+            "today": self._build_today, "calendar": self._build_calendar,
+            "mail": self._build_mail, "files": self._build_files,
+            "pinned": self._build_pinned,
+        }.get(self._section, self._build_today)
+        self._content.set_child(builder())
+
+    def _page(self) -> tuple[Adw.PreferencesPage, callable]:
+        page = Adw.PreferencesPage()
+        return page, page.add
+
+    def _build_today(self) -> Gtk.Widget:
+        events = self._data.get("events", [])
+        messages = self._data.get("messages", [])
+        unread = sum(1 for _a, m in messages if not m.get("is_read", True))
+        today = datetime.now().date().isoformat()
+        events_today = sum(1 for _a, e in events
+                           if (e.get("start", "") or "").startswith(today))
+        mounted = self._data.get("mounted", 0)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18,
+                      margin_top=18, margin_bottom=18, margin_start=18, margin_end=18)
+
+        # Stat cards.
+        stats = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12,
+                        homogeneous=True)
+        stats.append(self._stat(unread, _("Unread"), "mail-unread-symbolic"))
+        stats.append(self._stat(events_today, _("Events today"),
+                                "x-office-calendar-symbolic"))
+        stats.append(self._stat(len(self._data.get("files", [])), _("File changes"),
+                                "document-open-recent-symbolic"))
+        stats.append(self._stat(mounted, _("Mounted"), "folder-remote-symbolic"))
+        box.append(stats)
+
+        # Next event highlight.
+        nxt = self._next_event(events)
+        box.append(self._next_event_card(nxt))
+
+        # Short previews: next few events + unread mail.
+        previews = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12,
+                           homogeneous=True, vexpand=True)
+        previews.append(self._preview_group(
+            _("Up next"), [self._event_row(a, e) for a, e in events[:5]],
+            _("No upcoming events.")))
+        unread_msgs = [(a, m) for a, m in messages if not m.get("is_read", True)][:5]
+        previews.append(self._preview_group(
+            _("Unread"), [self._mail_row(a, m) for a, m in unread_msgs],
+            _("Inbox zero. 🎉")))
+        box.append(previews)
+        return Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER,
+                                  vexpand=True, child=box)
+
+    def _build_calendar(self) -> Gtk.Widget:
+        page, add = self._page()
+        group = Adw.PreferencesGroup(title=_("Next 7 days"))
+        add(group)
+        events = self._data.get("events", [])
+        if not events:
+            group.add(Adw.ActionRow(title=_("No upcoming events.")))
+        last_day = None
+        for account, ev in events:
+            day = (ev.get("start", "") or "").partition("T")[0]
+            if day != last_day:
+                group = Adw.PreferencesGroup(title=_pretty_day(day))
+                add(group)
+                last_day = day
+            group.add(self._event_row(account, ev))
+        return page
+
+    def _build_mail(self) -> Gtk.Widget:
+        page, add = self._page()
+        group = Adw.PreferencesGroup(title=_("Across all accounts"))
+        add(group)
+        messages = self._data.get("messages", [])
+        if not messages:
+            group.add(Adw.ActionRow(title=_("No recent mail.")))
+        for account, msg in messages[:40]:
+            group.add(self._mail_row(account, msg))
+        return page
+
+    def _build_files(self) -> Gtk.Widget:
+        page, add = self._page()
+        group = Adw.PreferencesGroup(
+            title=_("Recent changes"),
+            description=_("Newest edits in mounted or synced libraries."))
+        add(group)
+        files = self._data.get("files", [])
+        if not files:
+            group.add(Adw.ActionRow(
+                title=_("No recent changes"),
+                subtitle=_("Mount or sync a library to see activity here.")))
+        for f in files:
+            group.add(self._file_row(f))
+        return page
+
+    def _build_pinned(self) -> Gtk.Widget:
+        page, add = self._page()
+        group = Adw.PreferencesGroup(
+            title=_("Pinned"),
+            description=_("Shared mailboxes and team calendars you starred."))
+        add(group)
+        pinned = self._data.get("pinned", [])
+        if not pinned:
+            group.add(Adw.ActionRow(title=_("Nothing pinned yet.")))
+        for account, pin, detail in pinned:
+            group.add(self._pinned_row(account, pin, detail))
+        return page
+
+    # -- widgets ----------------------------------------------------------
+    def _stat(self, number, caption, icon) -> Gtk.Widget:
+        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2,
+                       margin_top=14, margin_bottom=14, margin_start=8, margin_end=8)
+        card.add_css_class("card")
+        img = Gtk.Image.new_from_icon_name(icon)
+        img.add_css_class("dim-label")
+        card.append(img)
+        num = Gtk.Label(label=str(number))
+        num.add_css_class("title-1")
+        card.append(num)
+        cap = Gtk.Label(label=caption)
+        cap.add_css_class("caption")
+        cap.add_css_class("dim-label")
+        card.append(cap)
+        return card
+
+    def _next_event_card(self, pair) -> Gtk.Widget:
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=14,
+                      margin_top=14, margin_bottom=14, margin_start=16, margin_end=16)
+        box.add_css_class("card")
+        icon = Gtk.Image.new_from_icon_name("alarm-symbolic")
+        icon.set_pixel_size(28)
+        box.append(icon)
+        text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, hexpand=True)
+        box.append(text)
+        if pair is None:
+            head = Gtk.Label(label=_("Nothing left today"), xalign=0)
+            head.add_css_class("heading")
+            text.append(head)
+            sub = Gtk.Label(label=_("Enjoy the quiet."), xalign=0)
+            sub.add_css_class("dim-label")
+            text.append(sub)
+            return box
+        account, ev = pair
+        head = Gtk.Label(label=ev.get("subject") or _("(no title)"), xalign=0,
+                         ellipsize=Pango.EllipsizeMode.END)
+        head.add_css_class("heading")
+        text.append(head)
+        when = _rel_time(ev.get("start", ""))
+        loc = ev.get("location")
+        sub = " · ".join(x for x in (when, loc, account.display_name) if x)
+        sublbl = Gtk.Label(label=sub, xalign=0)
+        sublbl.add_css_class("dim-label")
+        text.append(sublbl)
+        return box
+
+    def _preview_group(self, title, rows, empty) -> Gtk.Widget:
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        head = Gtk.Label(label=title, xalign=0)
+        head.add_css_class("heading")
+        box.append(head)
+        listbox = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        listbox.add_css_class("boxed-list")
+        if rows:
+            for r in rows:
+                listbox.append(r)
+        else:
+            listbox.append(Adw.ActionRow(title=empty))
+        box.append(listbox)
+        return box
+
+    @staticmethod
+    def _next_event(events):
+        now = datetime.now(timezone.utc)
+        for account, ev in events:
+            dt = _parse(ev.get("start", ""))
+            if dt is not None and dt >= now:
+                return (account, ev)
+        return None
+
+    def _spinner(self, text) -> Gtk.Widget:
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12,
+                      halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER,
+                      hexpand=True, vexpand=True)
+        sp = Gtk.Spinner(width_request=32, height_request=32)
+        sp.start()
+        box.append(sp)
+        lbl = Gtk.Label(label=text)
+        lbl.add_css_class("dim-label")
+        box.append(lbl)
+        return box
+
     # -- rows -------------------------------------------------------------
+    def _pinned_row(self, account, pin, detail) -> Adw.ActionRow:
+        from .format import esc
+
+        is_cal = pin.get("kind") == "calendar"
+        icon = "x-office-calendar-symbolic" if is_cal else "mail-unread-symbolic"
+        kind = _("Team") if pin.get("source") == "teams" else _("Shared")
+        subtitle = f"{kind} · {account.display_name}"
+        if detail:
+            subtitle = f"{detail} · {subtitle}"
+        row = Adw.ActionRow(title=esc(pin.get("name", "")), subtitle=esc(subtitle))
+        row.add_prefix(Gtk.Image.new_from_icon_name(icon))
+        row.set_activatable(True)
+        row.add_suffix(Gtk.Image.new_from_icon_name("go-next-symbolic"))
+        tab = "calendar" if is_cal else "mail"
+        row.connect("activated", lambda _r, a=account: self._window.open_account_tab(a, tab))
+        return row
+
+    def _file_row(self, f) -> Adw.ActionRow:
+        from .format import esc
+
+        row = Adw.ActionRow(title=esc(f.get("name", "")), subtitle=esc(_ago(f.get("mtime", 0))))
+        row.add_prefix(Gtk.Image.new_from_icon_name("text-x-generic-symbolic"))
+        row.set_activatable(True)
+        row.add_suffix(Gtk.Image.new_from_icon_name("go-next-symbolic"))
+        row.connect("activated", lambda _r, p=f.get("path", ""): self._open_path(p))
+        return row
+
+    def _open_path(self, path: str) -> None:
+        if not path:
+            return
+        uri = "file://" + GLib.Uri.escape_string(path, "/", False)
+        try:
+            Gio.AppInfo.launch_default_for_uri(uri, None)
+        except Exception as exc:  # noqa: BLE001
+            self._window.add_toast(_("Couldn't open: %s") % exc)
+
     def _event_row(self, account, ev) -> Adw.ActionRow:
         from .format import esc
 
@@ -116,9 +460,15 @@ class DashboardView(Adw.Bin):
         subtitle = f"{when} · {account.display_name}" if when else account.display_name
         row = Adw.ActionRow(title=esc(ev.get("subject") or _("(no title)")),
                             subtitle=esc(subtitle))
+        row.set_title_lines(1)
         row.add_prefix(Gtk.Image.new_from_icon_name("x-office-calendar-symbolic"))
         if ev.get("location"):
-            row.add_suffix(Gtk.Label(label=ev["location"], css_classes=["dim-label"]))
+            lbl = Gtk.Label(label=ev["location"], css_classes=["dim-label"])
+            lbl.set_ellipsize(Pango.EllipsizeMode.END)
+            row.add_suffix(lbl)
+        row.set_activatable(True)
+        row.connect("activated",
+                    lambda _r, a=account: self._window.open_account_tab(a, "calendar"))
         return row
 
     def _mail_row(self, account, msg) -> Adw.ActionRow:
@@ -135,18 +485,73 @@ class DashboardView(Adw.Bin):
             row.add_prefix(dot)
         else:
             row.add_prefix(Gtk.Image.new_from_icon_name("mail-read-symbolic"))
-        # Click → jump to this message in the account's Mail view.
         row.set_activatable(True)
         row.add_suffix(Gtk.Image.new_from_icon_name("go-next-symbolic"))
         row.connect(
             "activated",
-            lambda _r, a=account, mid=msg.get("id"): self._window.open_mail(a, mid),
-        )
+            lambda _r, a=account, mid=msg.get("id"): self._window.open_mail(a, mid))
         return row
 
 
 def _fmt(start: str, all_day: bool) -> str:
     if not start or "T" not in start:
         return start
-    date, _, rest = start.partition("T")
+    date, _sep, rest = start.partition("T")
     return date if all_day else f"{date} {rest[:5]}"
+
+
+def _parse(start: str):
+    if not start or "T" not in start:
+        return None
+    try:
+        dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            dt = datetime.fromisoformat(start.split(".", 1)[0])
+        except ValueError:
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _rel_time(start: str) -> str:
+    dt = _parse(start)
+    if dt is None:
+        return ""
+    delta = (dt - datetime.now(timezone.utc)).total_seconds()
+    if delta < 0:
+        return _("now")
+    if delta < 3600:
+        return _("in %d min") % max(1, int(delta // 60))
+    if delta < 86400:
+        h = int(delta // 3600)
+        m = int((delta % 3600) // 60)
+        return _("in %dh %02dm") % (h, m) if m else _("in %dh") % h
+    return _("in %d days") % int(delta // 86400)
+
+
+def _pretty_day(day: str) -> str:
+    try:
+        d = datetime.strptime(day, "%Y-%m-%d").date()
+    except ValueError:
+        return day or _("Undated")
+    today = datetime.now().date()
+    if d == today:
+        return _("Today · %s") % day
+    if d == today + timedelta(days=1):
+        return _("Tomorrow · %s") % day
+    return d.strftime("%A · %Y-%m-%d")
+
+
+def _ago(mtime: float) -> str:
+    if not mtime:
+        return ""
+    delta = datetime.now(timezone.utc).timestamp() - mtime
+    if delta < 60:
+        return _("just now")
+    if delta < 3600:
+        return _("%d min ago") % (delta // 60)
+    if delta < 86400:
+        return _("%d h ago") % (delta // 3600)
+    return _("%d d ago") % (delta // 86400)

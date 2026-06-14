@@ -11,7 +11,7 @@ this class only stores identifiers and display state, persisted as JSON in the
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 
 from gi.repository import GObject
 
@@ -24,6 +24,16 @@ class Account:
     module_id: str  # which module owns it, e.g. "microsoft365"
     signed_in: bool = False  # flipped true once auth completes (stage 2)
     full_sync: bool = False  # keep a two-way (bisync) offline copy on disk
+    # Per-account mount folder override (used when mount-layout == 'individual';
+    # empty means the global mount location). See preferences → Accounts.
+    mount_location: str = ""
+    # Shared/other mailbox addresses the user has added (delegated access). The
+    # Calendar/Mail views also reach these mailboxes' calendars and folders.
+    shared_mailboxes: list = field(default_factory=list)
+    # Pinned shared/group sources shown on the Dashboard. Each entry:
+    # {"kind": "mail"|"calendar", "source": "shared"|"teams",
+    #  "id": <address-or-group-id>, "name": <label>}.
+    pinned_sources: list = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -37,6 +47,9 @@ class Account:
             module_id=data["module_id"],
             signed_in=data.get("signed_in", False),
             full_sync=data.get("full_sync", False),
+            mount_location=data.get("mount_location", ""),
+            shared_mailboxes=list(data.get("shared_mailboxes", [])),
+            pinned_sources=list(data.get("pinned_sources", [])),
         )
 
 

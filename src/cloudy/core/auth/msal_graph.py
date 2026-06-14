@@ -26,9 +26,23 @@ GRAPH_ME = "https://graph.microsoft.com/v1.0/me"
 # consent). offline_access/openid/profile are added by MSAL automatically.
 SCOPES_BASE = ["User.Read"]
 SCOPES_FILES = ["Files.ReadWrite.All", "Sites.ReadWrite.All"]
-SCOPES_MAIL = ["Mail.ReadWrite", "Calendars.ReadWrite", "Contacts.ReadWrite"]
+# Mail.Send is a distinct grant from Mail.ReadWrite (read/modify/delete does NOT
+# allow sending); Calendars.ReadWrite already covers create/delete of events.
+SCOPES_MAIL = [
+    "Mail.ReadWrite", "Mail.Send", "Calendars.ReadWrite", "Contacts.ReadWrite",
+]
+# Used ONLY for shared/other mailbox (/users/{address}) access. Kept separate so
+# normal /me mail keeps working on tokens that predate this scope (no forced
+# re-consent for everyday mail; re-sign-in only unlocks shared mailboxes). Adds
+# send-as-shared and delegated calendar write for the shared sources.
+SCOPES_MAIL_SHARED = [
+    "Mail.ReadWrite.Shared", "Mail.Send.Shared", "Calendars.ReadWrite.Shared",
+]
 # Enumerate the Teams the user belongs to (each Team's files = a doc library).
 SCOPES_TEAMS = ["Team.ReadBasic.All"]
+# Read M365 group mailboxes (conversations) and group/team calendars. Usually
+# requires tenant-admin consent.
+SCOPES_GROUPS = ["Group.Read.All"]
 
 _CACHE_KIND = "msal-cache"
 

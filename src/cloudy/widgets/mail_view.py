@@ -10,12 +10,32 @@ folder's messages are cached independently (stale-while-revalidate).
 
 from __future__ import annotations
 
-import threading
+import re
 from gettext import gettext as _
 
-from gi.repository import Adw, GLib, Gtk, Pango
+from gi.repository import Adw, Gtk, Pango
 
 from .format import sender_name, short_time
+from .source_nav import (
+    SCOPE_HINT,
+    SourceTabs,
+    action_row,
+    clear_listbox,
+    is_pinned,
+    is_scope_error,
+    message_row,
+    present_add_shared_dialog,
+    run_async,
+    toggle_pin,
+)
+
+_WS_RE = re.compile(r"\s+")
+
+
+def _oneline(text: str) -> str:
+    """Collapse every run of whitespace (incl. \\r and unicode breaks) to one
+    space so list labels never wrap to multiple lines."""
+    return _WS_RE.sub(" ", text or "").strip()
 
 
 class MailView(Adw.Bin):
@@ -25,26 +45,39 @@ class MailView(Adw.Bin):
         super().__init__()
         self._window = window
         self._account = account
-        # Well-known default folder differs per provider.
+        # Microsoft accounts get three sources: Me / Teams / Shared. Google only
+        # has its own mailbox ("me").
+        self._is_ms = account.provider == "microsoft"
+        self._source = "me"
         self._folder_id = "INBOX" if account.provider == "google" else "inbox"
-        self._folders: list[dict] = []
-        self._suppress_folder_signal = False
+        self._me_folders: list[dict] = []
+        self._teams: list[dict] = []          # [{id, name}] (raw group ids)
+        self._shared_folders: dict = {}        # address -> [folders]
+        self._suppress = False
         self._open_mid = None
         self._messages_by_id: dict = {}
         self._rows_by_id: dict = {}
 
-        # -- left pane: folder switcher (header) + message list ----------
-        self._folder_dropdown = Gtk.DropDown(
-            model=Gtk.StringList.new([_("Inbox")]), sensitive=False,
-            tooltip_text=_("Choose a folder"),
-        )
-        self._folder_dropdown.add_css_class("flat")
-        self._folder_dropdown.connect("notify::selected", self._on_folder_changed)
-
-        sidebar_header = Adw.HeaderBar(
-            show_start_title_buttons=False, show_end_title_buttons=False,
-            title_widget=self._folder_dropdown,
-        )
+        # -- left pane: source tabs + context/folder dropdowns + list ----
+        self._ctx_dd = Gtk.DropDown(model=Gtk.StringList.new([]), tooltip_text=_("Choose"))
+        self._ctx_dd.add_css_class("flat")
+        self._ctx_dd.set_hexpand(True)
+        self._ctx_dd.connect("notify::selected", self._on_ctx_changed)
+        self._folder_dd = Gtk.DropDown(
+            model=Gtk.StringList.new([_("Inbox")]), tooltip_text=_("Choose a folder"))
+        self._folder_dd.add_css_class("flat")
+        self._folder_dd.set_hexpand(True)
+        self._folder_dd.connect("notify::selected", self._on_folder_changed)
+        self._add_shared_btn = Gtk.Button(
+            icon_name="list-add-symbolic", tooltip_text=_("Add a shared mailbox"))
+        self._add_shared_btn.add_css_class("flat")
+        self._add_shared_btn.connect("clicked", self._on_add_shared)
+        self._star_btn = Gtk.Button(
+            icon_name="non-starred-symbolic",
+            tooltip_text=_("Pin this mailbox to the Dashboard"))
+        self._star_btn.add_css_class("flat")
+        self._star_btn.connect("clicked", self._on_star_clicked)
+        self._ctx_current = None  # {"id", "name"} of the selected team/shared source
 
         self._list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.SINGLE,
                                  valign=Gtk.Align.START)
@@ -54,8 +87,31 @@ class MailView(Adw.Bin):
                                          vexpand=True)
         list_scroll.set_child(self._list)
 
+        compose_btn = Gtk.Button(
+            icon_name="mail-message-new-symbolic", tooltip_text=_("New message"))
+        compose_btn.connect("clicked", self._on_compose_clicked)
+
         sidebar_tb = Adw.ToolbarView()
-        sidebar_tb.add_top_bar(sidebar_header)
+        if self._is_ms:
+            tabs = SourceTabs(self._on_source_changed)
+            header = Adw.HeaderBar(
+                show_start_title_buttons=False, show_end_title_buttons=False,
+                title_widget=tabs)
+            header.pack_start(compose_btn)
+            sidebar_tb.add_top_bar(header)
+            bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6,
+                          margin_top=6, margin_bottom=6, margin_start=10, margin_end=10)
+            bar.append(self._ctx_dd)
+            bar.append(self._folder_dd)
+            bar.append(self._star_btn)
+            bar.append(self._add_shared_btn)
+            sidebar_tb.add_top_bar(bar)
+        else:
+            header = Adw.HeaderBar(
+                show_start_title_buttons=False, show_end_title_buttons=False,
+                title_widget=self._folder_dd)
+            header.pack_start(compose_btn)
+            sidebar_tb.add_top_bar(header)
         sidebar_tb.set_content(list_scroll)
         sidebar_page = Adw.NavigationPage(title=_("Mail"), tag="messages")
         sidebar_page.set_child(sidebar_tb)
@@ -75,6 +131,12 @@ class MailView(Adw.Bin):
         )
         self._delete_btn.connect("clicked", self._on_delete_clicked)
         content_header.pack_end(self._delete_btn)
+        self._reply_btn = Gtk.Button(
+            icon_name="mail-reply-sender-symbolic", tooltip_text=_("Reply"),
+            sensitive=False,
+        )
+        self._reply_btn.connect("clicked", self._on_reply_clicked)
+        content_header.pack_start(self._reply_btn)
         content_tb = Adw.ToolbarView()
         content_tb.add_top_bar(content_header)
         content_tb.set_content(self._reader)
@@ -88,7 +150,10 @@ class MailView(Adw.Bin):
         self._split.set_content(content_page)
         self.set_child(self._split)
 
+        self._ctx_items: list = []
+        self._folder_items: list = []
         self._has_data = False
+        self._update_source_ui()
         self._show_cached_or_placeholder()
         self._load_async()
         self._load_folders_async()
@@ -109,19 +174,18 @@ class MailView(Adw.Bin):
 
     # -- helpers ----------------------------------------------------------
     def _clear(self) -> None:
-        child = self._list.get_first_child()
-        while child is not None:
-            nxt = child.get_next_sibling()
-            self._list.remove(child)
-            child = nxt
+        clear_listbox(self._list)
 
     def _set_placeholder(self, text: str) -> None:
         self._clear()
-        row = Gtk.ListBoxRow(activatable=False, selectable=False)
-        label = Gtk.Label(label=text, margin_top=18, margin_bottom=18)
-        label.add_css_class("dim-label")
-        row.set_child(label)
-        self._list.append(row)
+        self._list.append(message_row(text))
+
+    def _reauth_prompt(self) -> None:
+        """Show the re-sign-in call-to-action (token lacks the shared scope)."""
+        self._clear()
+        self._list.append(action_row(
+            SCOPE_HINT, _("Re-sign in"),
+            lambda: self._window.sign_in_account(self._account)))
 
     def _reader_placeholder(self, icon: str, title: str, description: str) -> Gtk.Widget:
         return Adw.StatusPage(icon_name=icon, title=title, description=description)
@@ -138,48 +202,179 @@ class MailView(Adw.Bin):
         box.append(label)
         return box
 
-    # -- folders ----------------------------------------------------------
+    # -- sources (Me / Teams / Shared) -----------------------------------
+    def _shared_addresses(self) -> list:
+        return list(self._account.shared_mailboxes or [])
+
+    @staticmethod
+    def _label(f) -> str:
+        unread = f.get("unread", 0)
+        return f"{f['name']} ({unread})" if unread else f["name"]
+
     def _load_folders_async(self) -> None:
-        def worker():
+        """Load the Me folders and (for Microsoft) the Teams list up front."""
+        def work():
+            from .clients import build_account_client
+
+            client = build_account_client(self._window.get_application(), self._account)
             try:
-                from .clients import build_account_client
-
-                client = build_account_client(self._window.get_application(), self._account)
                 folders = client.list_folders()
-                GLib.idle_add(self._on_folders_loaded, folders)
-            except Exception:  # noqa: BLE001 - folder list is non-critical
-                GLib.idle_add(self._on_folders_loaded, [])
+            except Exception:  # noqa: BLE001
+                folders = []
+            teams = []
+            if self._is_ms and hasattr(client, "list_groups"):
+                try:
+                    teams = client.list_groups()
+                except Exception:  # noqa: BLE001 - needs Group.Read.All consent
+                    teams = []
+            return folders, teams
 
-        threading.Thread(target=worker, daemon=True).start()
+        # On a hard failure (e.g. no client) fall back to empty sources.
+        run_async(work, lambda res, _error: self._on_sources_loaded(*(res or ([], []))))
 
-    def _on_folders_loaded(self, folders) -> bool:
-        if not folders:
-            return False
-        self._folders = folders
-        names = []
-        selected = 0
-        for i, f in enumerate(folders):
-            unread = f.get("unread", 0)
-            names.append(f"{f['name']} ({unread})" if unread else f["name"])
-            if f["id"] == self._folder_id:
-                selected = i
-        self._suppress_folder_signal = True
-        self._folder_dropdown.set_model(Gtk.StringList.new(names))
-        self._folder_dropdown.set_selected(selected)
-        self._folder_dropdown.set_sensitive(True)
-        self._suppress_folder_signal = False
+    def _on_sources_loaded(self, folders, teams) -> bool:
+        self._me_folders = folders
+        self._teams = teams
+        # If we're showing the source the data belongs to, refresh its dropdowns.
+        if self._source == "me":
+            self._populate_folders(self._me_folders, initial=True)
+        elif self._source == "teams":
+            self._populate_context()
         return False
 
-    def _on_folder_changed(self, dropdown, _pspec) -> None:
-        if self._suppress_folder_signal:
+    def _update_source_ui(self) -> None:
+        """Show the right dropdowns/buttons for the active source."""
+        if not self._is_ms:
+            return
+        self._ctx_dd.set_visible(self._source in ("teams", "shared"))
+        self._folder_dd.set_visible(self._source in ("me", "shared"))
+        self._add_shared_btn.set_visible(self._source == "shared")
+        if self._source == "me":
+            self._ctx_current = None
+        self._update_star()
+
+    def _on_source_changed(self, source) -> None:
+        if source == self._source:
+            return
+        self._source = source
+        self._update_source_ui()
+        if source == "me":
+            self._populate_folders(self._me_folders)
+        else:
+            self._populate_context()
+
+    def _populate_context(self) -> None:
+        """Fill the context dropdown (teams list or shared-mailbox list)."""
+        if self._source == "teams":
+            items = [{"id": t["id"], "name": t["name"]} for t in self._teams]
+            empty = _("No group mailboxes.")
+        else:
+            items = [{"id": a, "name": a} for a in self._shared_addresses()]
+            empty = _("Add a shared mailbox with +.")
+        self._ctx_items = items
+        self._suppress = True
+        self._ctx_dd.set_model(Gtk.StringList.new([i["name"] for i in items] or [_("None")]))
+        self._ctx_dd.set_sensitive(bool(items))
+        self._ctx_dd.set_selected(0)
+        self._suppress = False
+        if not items:
+            self._folder_dd.set_visible(False)
+            self._set_placeholder(empty)
+            return
+        self._on_ctx_changed(self._ctx_dd, None)
+
+    def _on_ctx_changed(self, dropdown, _pspec) -> None:
+        if self._suppress:
             return
         idx = dropdown.get_selected()
-        if idx < 0 or idx >= len(self._folders):
+        items = getattr(self, "_ctx_items", [])
+        if not (0 <= idx < len(items)):
             return
-        folder = self._folders[idx]
-        if folder["id"] == self._folder_id:
+        self._ctx_current = items[idx]
+        self._update_star()
+        if self._source == "teams":
+            self._select_folder(f"group:{items[idx]['id']}")
+        else:  # shared: load that mailbox's folders into the folder dropdown
+            self._load_shared_folders(items[idx]["id"])
+
+    # -- pin (star) the current team/shared mailbox ----------------------
+    def _update_star(self) -> None:
+        active = self._source in ("teams", "shared") and self._ctx_current is not None
+        self._star_btn.set_visible(active)
+        if not active:
             return
-        self._folder_id = folder["id"]
+        pinned = is_pinned(self._account, "mail", self._source, self._ctx_current["id"])
+        self._star_btn.set_icon_name("starred-symbolic" if pinned else "non-starred-symbolic")
+
+    def _on_star_clicked(self, _btn) -> None:
+        if self._ctx_current is None:
+            return
+        toggle_pin(self._window, self._account, kind="mail", source=self._source,
+                   sid=self._ctx_current["id"], name=self._ctx_current["name"])
+        self._update_star()
+
+    def _populate_folders(self, folders, *, initial: bool = False) -> None:
+        self._folder_items = folders
+        self._suppress = True
+        self._folder_dd.set_model(
+            Gtk.StringList.new([self._label(f) for f in folders] or [_("None")]))
+        self._folder_dd.set_sensitive(bool(folders))
+        idx = next((i for i, f in enumerate(folders) if f["id"] == self._folder_id), 0)
+        self._folder_dd.set_selected(idx)
+        self._suppress = False
+        if not folders:
+            self._set_placeholder(_("No folders."))
+            return
+        fid = folders[idx]["id"]
+        if not (initial and fid == self._folder_id):
+            self._select_folder(fid)
+
+    def _on_folder_changed(self, dropdown, _pspec) -> None:
+        if self._suppress:
+            return
+        folders = getattr(self, "_folder_items", [])
+        idx = dropdown.get_selected()
+        if 0 <= idx < len(folders) and folders[idx]["id"] != self._folder_id:
+            self._select_folder(folders[idx]["id"])
+
+    def _load_shared_folders(self, address) -> None:
+        cached = self._shared_folders.get(address)
+        if cached is not None:
+            self._populate_folders(cached)
+            return
+        self._set_placeholder(_("Loading folders…"))
+
+        def work():
+            from .clients import build_account_client
+
+            client = build_account_client(self._window.get_application(), self._account)
+            return client.list_shared_folders(address)
+
+        run_async(work, lambda folders, error: self._on_shared_folders(address, folders, error))
+
+    def _on_shared_folders(self, address, folders, error) -> bool:
+        if is_scope_error(error):
+            self._reauth_prompt()
+            self._folder_dd.set_sensitive(False)
+            return False
+        if error or not folders:
+            self._set_placeholder(
+                _("Couldn't open %(addr)s: %(err)s") % {"addr": address, "err": error}
+                if error else _("No folders in %s.") % address
+            )
+            self._folder_dd.set_sensitive(False)
+            return False
+        self._shared_folders[address] = folders
+        if self._source == "shared":
+            self._populate_folders(folders)
+        return False
+
+    def _on_add_shared(self, _btn) -> None:
+        present_add_shared_dialog(
+            self._window, self._account, lambda _addr: self._populate_context())
+
+    def _select_folder(self, fid) -> None:
+        self._folder_id = fid
         if not self._show_cached_or_placeholder():
             self._load_async()
 
@@ -187,24 +382,23 @@ class MailView(Adw.Bin):
     def _load_async(self) -> None:
         folder_id = self._folder_id
 
-        def worker():
-            try:
-                from .clients import build_account_client
+        def work():
+            from .clients import build_account_client
 
-                client = build_account_client(self._window.get_application(), self._account)
-                messages = client.list_messages(folder_id)
-                GLib.idle_add(self._on_loaded, folder_id, messages, None)
-            except Exception as exc:  # noqa: BLE001
-                GLib.idle_add(self._on_loaded, folder_id, None, str(exc))
+            client = build_account_client(self._window.get_application(), self._account)
+            return client.list_messages(folder_id)
 
-        threading.Thread(target=worker, daemon=True).start()
+        run_async(work, lambda messages, error: self._on_loaded(folder_id, messages, error))
 
     def _on_loaded(self, folder_id, messages, error) -> bool:
         if error:
             # Never cache errors; keep any cached list on screen and only
             # surface the error if the active folder has nothing to show.
             if folder_id == self._folder_id and not self._has_data:
-                self._set_placeholder(_("Couldn't load mail: %s") % error)
+                if is_scope_error(error):
+                    self._reauth_prompt()
+                else:
+                    self._set_placeholder(_("Couldn't load mail: %s") % error)
             return False
         self._window.get_application().cache.set(
             f"{self._account.id}:messages:{folder_id}", messages
@@ -247,9 +441,9 @@ class MailView(Adw.Bin):
     # -- a single email row (plain Gtk.Labels: no markup parsing) ---------
     def _mail_row(self, msg) -> Gtk.ListBoxRow:
         unread = not msg.get("is_read", True)
-        sender = sender_name(msg.get("from", "")) or _("Unknown sender")
-        subject = msg.get("subject") or _("(no subject)")
-        preview = (msg.get("preview") or "").replace("\n", " ").strip()
+        sender = _oneline(sender_name(msg.get("from", ""))) or _("Unknown sender")
+        subject = _oneline(msg.get("subject", "")) or _("(no subject)")
+        preview = _oneline(msg.get("preview", ""))
 
         row = Gtk.ListBoxRow(activatable=True)
         row._mid = msg["id"]
@@ -312,7 +506,9 @@ class MailView(Adw.Bin):
         """Open a message in the reading pane (also used to deep-link from the
         dashboard). Selects its list row when that row is present."""
         self._open_mid = mid
-        self._delete_btn.set_sensitive(True)
+        # Group conversations are read-only (no per-user delete).
+        self._delete_btn.set_sensitive(not str(mid).startswith("group:"))
+        self._reply_btn.set_sensitive(False)  # enabled once the body loads
         self._reader.set_child(self._reader_loading())
         self._split.set_show_content(True)  # reveal the reader when collapsed
 
@@ -320,17 +516,13 @@ class MailView(Adw.Bin):
         if row is not None and self._list.get_selected_row() is not row:
             self._list.select_row(row)
 
-        def worker():
-            try:
-                from .clients import build_account_client
+        def work():
+            from .clients import build_account_client
 
-                client = build_account_client(self._window.get_application(), self._account)
-                full = client.get_message(mid)
-                GLib.idle_add(self._show_message, mid, full, None)
-            except Exception as exc:  # noqa: BLE001
-                GLib.idle_add(self._show_message, mid, None, str(exc))
+            client = build_account_client(self._window.get_application(), self._account)
+            return client.get_message(mid)
 
-        threading.Thread(target=worker, daemon=True).start()
+        run_async(work, lambda full, error: self._show_message(mid, full, error))
 
     def _show_message(self, mid, msg, error) -> bool:
         if mid != self._open_mid:
@@ -343,8 +535,63 @@ class MailView(Adw.Bin):
         from .message_view import build_message_content
 
         self._reader.set_child(build_message_content(msg))
+        self._open_msg = msg
+        self._reply_btn.set_sensitive(True)
         self._mark_read(mid)
         return False
+
+    # -- compose / reply --------------------------------------------------
+    def _send_context(self):
+        """Return ``(source, address)`` for sending as the active mailbox.
+
+        Shared mailboxes have their own address (send-as); Me and Teams/group
+        sources fall back to the signed-in user for new messages."""
+        if self._source == "shared" and self._ctx_current is not None:
+            return "shared", self._ctx_current["id"]
+        return "me", None
+
+    def _from_label(self) -> str:
+        source, address = self._send_context()
+        if source == "shared" and address:
+            return address
+        return self._account.display_name
+
+    def _on_compose_clicked(self, _btn) -> None:
+        from .compose_view import ComposeWindow
+
+        source, address = self._send_context()
+
+        def send(to, subject, body):
+            from .clients import build_account_client
+
+            client = build_account_client(self._window.get_application(), self._account)
+            client.send_mail(to=to, subject=subject, body=body,
+                             source=source, address=address)
+
+        ComposeWindow(self._window, self._account, from_label=self._from_label(),
+                      send_fn=send).present()
+
+    def _on_reply_clicked(self, _btn) -> None:
+        mid = self._open_mid
+        if not mid:
+            return
+        from .compose_view import ComposeWindow
+
+        meta = getattr(self, "_open_msg", None) or self._messages_by_id.get(mid, {})
+        subject = meta.get("subject", "")
+        if subject and not subject.lower().startswith("re:"):
+            subject = _("Re: %s") % subject
+
+        def send(_to, _subject, body):
+            from .clients import build_account_client
+
+            client = build_account_client(self._window.get_application(), self._account)
+            client.reply_mail(mid, body)
+
+        ComposeWindow(
+            self._window, self._account, from_label=self._account.display_name,
+            send_fn=send, to=meta.get("from", ""), subject=subject, title=_("Reply"),
+        ).present()
 
     # -- write-back: mark read / delete -----------------------------------
     def _mark_read(self, mid) -> None:
@@ -355,16 +602,14 @@ class MailView(Adw.Bin):
             cached["is_read"] = True  # also updates the cached list (same dict)
             self._refresh_row(mid, cached)
 
-        def worker():
-            try:
-                from .clients import build_account_client
+        def work():
+            from .clients import build_account_client
 
-                client = build_account_client(self._window.get_application(), self._account)
-                client.mark_read(mid, True)
-            except Exception:  # noqa: BLE001 - best-effort (e.g. Gmail not re-consented)
-                pass
+            client = build_account_client(self._window.get_application(), self._account)
+            client.mark_read(mid, True)
 
-        threading.Thread(target=worker, daemon=True).start()
+        # Best-effort (e.g. Gmail not re-consented): ignore the outcome.
+        run_async(work, lambda _r, _e: False)
 
     def _on_delete_clicked(self, _btn) -> None:
         mid = self._open_mid
@@ -383,17 +628,14 @@ class MailView(Adw.Bin):
         ))
         self._window.add_toast(_("Moved to Trash"))
 
-        def worker():
-            try:
-                from .clients import build_account_client
+        def work():
+            from .clients import build_account_client
 
-                client = build_account_client(self._window.get_application(), self._account)
-                client.delete_message(mid)
-                GLib.idle_add(self._drop_from_cache, mid)
-            except Exception as exc:  # noqa: BLE001
-                GLib.idle_add(self._delete_failed, str(exc))
+            client = build_account_client(self._window.get_application(), self._account)
+            client.delete_message(mid)
 
-        threading.Thread(target=worker, daemon=True).start()
+        run_async(work, lambda _r, error:
+                  self._delete_failed(error) if error else self._drop_from_cache(mid))
 
     def _drop_from_cache(self, mid) -> bool:
         cache = self._window.get_application().cache

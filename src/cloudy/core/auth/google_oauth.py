@@ -30,9 +30,17 @@ USERINFO = "https://openidconnect.googleapis.com/v1/userinfo"
 
 SCOPES_BASE = ["openid", "email", "profile"]
 # gmail.modify (read + mark read/unread + trash) so the reader can write back;
-# existing accounts must re-sign-in (⋮ → Sign Out / Re-sign In) to pick it up.
-SCOPES_MAIL = ["https://www.googleapis.com/auth/gmail.modify"]
-SCOPES_CALENDAR = ["https://www.googleapis.com/auth/calendar.readonly"]
+# gmail.send adds compose/reply (modify alone does NOT permit sending). Existing
+# accounts must re-sign-in (⋮ → Sign Out / Re-sign In) to pick these up.
+SCOPES_MAIL = [
+    "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/gmail.send",
+]
+# calendar.events grants read + create/delete of events (supersedes the old
+# read-only scope so the New event / Delete actions work).
+SCOPES_CALENDAR = ["https://www.googleapis.com/auth/calendar.events"]
+# Read-only access to the user's Google Contacts (for To: autocomplete).
+SCOPES_CONTACTS = ["https://www.googleapis.com/auth/contacts.readonly"]
 
 _TOKEN_KIND = "google-token"
 
@@ -89,7 +97,8 @@ class GoogleAuth:
 
     # -- interactive (system browser + loopback + PKCE) ------------------
     def sign_in_interactive(self, scopes: Sequence[str] = None, open_url=None) -> dict:
-        scopes = list(scopes or (SCOPES_BASE + SCOPES_MAIL + SCOPES_CALENDAR))
+        scopes = list(scopes or (SCOPES_BASE + SCOPES_MAIL + SCOPES_CALENDAR
+                                  + SCOPES_CONTACTS))
         verifier = _b64url(_secrets.token_bytes(48))
         challenge = _b64url(hashlib.sha256(verifier.encode()).digest())
 

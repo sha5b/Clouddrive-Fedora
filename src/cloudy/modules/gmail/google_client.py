@@ -23,10 +23,11 @@ import urllib.request
 from datetime import datetime, timezone
 from typing import Callable, Sequence
 
-from ...core.auth.google_oauth import SCOPES_CALENDAR, SCOPES_MAIL
+from ...core.auth.google_oauth import SCOPES_CALENDAR, SCOPES_CONTACTS, SCOPES_MAIL
 
 GMAIL = "https://gmail.googleapis.com/gmail/v1"
 CALENDAR = "https://www.googleapis.com/calendar/v3"
+PEOPLE = "https://people.googleapis.com/v1"
 
 
 class GoogleError(Exception):
@@ -98,6 +99,18 @@ class GoogleClient:
             with urllib.request.urlopen(req, timeout=30) as resp:
                 raw = resp.read().decode()
                 return json.loads(raw) if raw else {}
+        except urllib.error.HTTPError as exc:
+            raise GoogleError(f"Google {exc.code}: {exc.read().decode(errors='replace')}") from exc
+
+    def _delete(self, url: str, scopes: Sequence[str]) -> None:
+        token = self._token_provider(scopes)
+        if not token:
+            raise GoogleError("not signed in (no token for the requested scopes)")
+        req = urllib.request.Request(
+            url, method="DELETE", headers={"Authorization": f"Bearer {token}"})
+        try:
+            with urllib.request.urlopen(req, timeout=30):
+                return
         except urllib.error.HTTPError as exc:
             raise GoogleError(f"Google {exc.code}: {exc.read().decode(errors='replace')}") from exc
 
@@ -201,6 +214,74 @@ class GoogleClient:
         """Move a message to Trash (recoverable; needs gmail.modify)."""
         self._post(f"{GMAIL}/users/me/messages/{message_id}/trash", None, SCOPES_MAIL)
 
+    # -- compose / reply --------------------------------------------------
+    @staticmethod
+    def _raw_message(to, subject: str, body: str, *, cc=None, html: bool = False,
+                     headers: dict | None = None) -> str:
+        """Build an RFC-2822 message, base64url-encoded for Gmail's ``raw`` field."""
+        from email.message import EmailMessage
+
+        msg = EmailMessage()
+        msg["To"] = ", ".join(a for a in (to or []) if a)
+        if cc:
+            msg["Cc"] = ", ".join(a for a in cc if a)
+        msg["Subject"] = subject
+        for name, value in (headers or {}).items():
+            if value:
+                msg[name] = value
+        if html:
+            msg.set_content("(This message is in HTML.)")
+            msg.add_alternative(body, subtype="html")
+        else:
+            msg.set_content(body)
+        return base64.urlsafe_b64encode(msg.as_bytes()).decode()
+
+    def send_mail(self, *, to, subject: str, body: str, source: str = "me",
+                  address: str | None = None, cc=None, html: bool = False) -> None:
+        """Send a new message (Gmail always sends as the signed-in user; the
+        ``source``/``address`` args are accepted for a uniform client API)."""
+        raw = self._raw_message(to, subject, body, cc=cc, html=html)
+        self._post(f"{GMAIL}/users/me/messages/send", {"raw": raw}, SCOPES_MAIL)
+
+    def reply_mail(self, message_id: str, body: str, *, reply_all: bool = False,
+                   html: bool = False) -> None:
+        """Reply on the original thread (To = original sender, subject ``Re: …``)."""
+        meta = self._get(
+            f"{GMAIL}/users/me/messages/{message_id}"
+            f"?format=metadata&metadataHeaders=From&metadataHeaders=Subject"
+            f"&metadataHeaders=Message-ID&metadataHeaders=References",
+            SCOPES_MAIL,
+        )
+        hdrs = {h["name"].lower(): h["value"]
+                for h in meta.get("payload", {}).get("headers", [])}
+        subject = hdrs.get("subject", "")
+        if not subject.lower().startswith("re:"):
+            subject = f"Re: {subject}"
+        msg_id = hdrs.get("message-id", "")
+        references = " ".join(x for x in (hdrs.get("references", ""), msg_id) if x)
+        raw = self._raw_message(
+            [hdrs.get("from", "")], subject, body, html=html,
+            headers={"In-Reply-To": msg_id, "References": references},
+        )
+        self._post(f"{GMAIL}/users/me/messages/send",
+                   {"raw": raw, "threadId": meta.get("threadId", "")}, SCOPES_MAIL)
+
+    # -- Contacts ---------------------------------------------------------
+    def list_contacts(self, *, limit: int = 1000) -> list[dict]:
+        """Google Contacts as ``[{name, email}]`` (needs contacts.readonly)."""
+        url = (f"{PEOPLE}/people/me/connections"
+               f"?personFields=names,emailAddresses&pageSize={limit}")
+        data = self._get(url, SCOPES_CONTACTS)
+        out = []
+        for p in data.get("connections", []):
+            names = p.get("names") or []
+            name = names[0].get("displayName", "") if names else ""
+            for ea in p.get("emailAddresses", []) or []:
+                addr = ea.get("value")
+                if addr:
+                    out.append({"name": name, "email": addr})
+        return out
+
     # -- Calendar ---------------------------------------------------------
     def list_events(self, start_iso: str, end_iso: str, *, limit: int = 50) -> list[dict]:
         params = urllib.parse.urlencode({
@@ -211,17 +292,63 @@ class GoogleClient:
             "maxResults": str(limit),
         })
         data = self._get(f"{CALENDAR}/calendars/primary/events?{params}", SCOPES_CALENDAR)
-        out = []
-        for e in data.get("items", []):
-            start = e.get("start", {})
-            end = e.get("end", {})
-            all_day = "date" in start
-            out.append({
-                "id": e.get("id", ""),
-                "subject": e.get("summary", "(no title)"),
-                "start": start.get("dateTime") or start.get("date", ""),
-                "end": end.get("dateTime") or end.get("date", ""),
-                "location": e.get("location", ""),
-                "all_day": all_day,
-            })
-        return out
+        return [self._event_from_json(e) for e in data.get("items", [])]
+
+    @staticmethod
+    def _event_from_json(e: dict) -> dict:
+        start = e.get("start", {})
+        end = e.get("end", {})
+        return {
+            "id": e.get("id", ""),
+            "subject": e.get("summary", "(no title)"),
+            "start": start.get("dateTime") or start.get("date", ""),
+            "end": end.get("dateTime") or end.get("date", ""),
+            "location": e.get("location", ""),
+            "all_day": "date" in start,
+        }
+
+    def create_event(self, *, subject: str, start_iso: str, end_iso: str,
+                     location: str = "", body: str = "", attendees=None,
+                     all_day: bool = False, source: str = "me",
+                     address: str | None = None, html: bool = False) -> dict:
+        """Create an event on the primary calendar (needs calendar.events).
+
+        All-day events use a ``date`` (the calendar day from the ISO string);
+        timed events use the full ``dateTime``."""
+        def slot(iso: str) -> dict:
+            return {"date": iso[:10]} if all_day else {"dateTime": iso}
+
+        event = {"summary": subject, "start": slot(start_iso), "end": slot(end_iso)}
+        if location:
+            event["location"] = location
+        if body:
+            event["description"] = body
+        if attendees:
+            event["attendees"] = [{"email": a} for a in attendees if a]
+        return self._post(
+            f"{CALENDAR}/calendars/primary/events", event, SCOPES_CALENDAR)
+
+    def delete_event(self, event_id: str) -> None:
+        """Delete an event from the primary calendar (needs calendar.events)."""
+        self._delete(
+            f"{CALENDAR}/calendars/primary/events/{event_id}", SCOPES_CALENDAR)
+
+    def get_event(self, event_id: str) -> dict:
+        """Full event detail for the reading pane (read-only for Google)."""
+        data = self._get(f"{CALENDAR}/calendars/primary/events/{event_id}", SCOPES_CALENDAR)
+        base = self._event_from_json(data)
+        organizer = data.get("organizer") or {}
+        attendees = [a.get("displayName") or a.get("email", "")
+                     for a in data.get("attendees", []) or []]
+        description = data.get("description", "") or ""
+        base.update({
+            "organizer": organizer.get("displayName") or organizer.get("email", ""),
+            "attendees": attendees,
+            "body": description,
+            "body_html": "<" in description and ">" in description,
+            "online_url": data.get("hangoutLink", ""),
+            "web_link": data.get("htmlLink", ""),
+            "response": "none",
+            "can_respond": False,  # Google calendar is read-only (scope)
+        })
+        return base

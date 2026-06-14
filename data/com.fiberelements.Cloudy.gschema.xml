@@ -33,9 +33,36 @@ SPDX-FileCopyrightText: 2026 Fiber Elements
       </description>
     </key>
 
+    <key name="mount-layout" type="s">
+      <default>'one-folder'</default>
+      <summary>Where libraries mount relative to the mount location</summary>
+      <description>
+        'one-folder' mounts every library as a subfolder of the single mount
+        location; 'individual' lets each account choose its own mount folder.
+      </description>
+    </key>
+
+    <key name="default-sync-type" type="s">
+      <default>'stream'</default>
+      <summary>Default file sync type used when an account enables file sync</summary>
+      <description>
+        'stream' mounts libraries on demand (no local copy); 'full' keeps a
+        two-way synced offline copy on disk.
+      </description>
+    </key>
+
     <key name="autostart" type="b">
       <default>false</default>
       <summary>Start Cloudy automatically at login</summary>
+    </key>
+
+    <key name="offline-sync-enabled" type="b">
+      <default>false</default>
+      <summary>Master switch for per-account two-way offline sync</summary>
+      <description>
+        When off, per-account "keep a synced copy" toggles are inactive and no
+        background bisync runs.
+      </description>
     </key>
 
     <key name="window-maximized" type="b">
@@ -54,6 +81,29 @@ SPDX-FileCopyrightText: 2026 Fiber Elements
     <key name="last-active-view" type="s">
       <default>'welcome'</default>
       <summary>The view shown when the app was last closed</summary>
+    </key>
+
+    <key name="notifications-enabled" type="b">
+      <default>true</default>
+      <summary>Show desktop notifications for new mail and upcoming events</summary>
+    </key>
+
+    <key name="run-in-background" type="b">
+      <default>false</default>
+      <summary>Keep running in the background when the window is closed</summary>
+      <description>
+        When on, closing the window hides it and Cloudy keeps running (tray /
+        Background Apps); use Quit to exit fully.
+      </description>
+    </key>
+
+    <key name="eds-publish-enabled" type="b">
+      <default>false</default>
+      <summary>Publish events into the GNOME Shell calendar (Evolution Data Server)</summary>
+      <description>
+        Mirrors your Cloudy calendar events into a local "Cloudy" calendar so
+        they show in the GNOME top-bar calendar. Best-effort; requires EDS.
+      </description>
     </key>
 
     <key name="accounts" type="s">

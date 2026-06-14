@@ -38,8 +38,10 @@ class CloudyWindow(Adw.ApplicationWindow):
         self._account_stack = None
         self._account_mail_view = None
         self._account_shown = None
+        self._last_tab: dict = {}  # account id -> last-viewed tab name
 
         self._bind_window_state()
+        self.connect("close-request", self._on_close_request)
         self.sidebar_list.connect("row-selected", self._on_row_selected)
         self._registry.connect("changed", lambda *_: self._refresh_sidebar())
         self._refresh_sidebar()
@@ -54,6 +56,16 @@ class CloudyWindow(Adw.ApplicationWindow):
         self._settings.bind(
             "window-maximized", self, "maximized", Gio.SettingsBindFlags.DEFAULT
         )
+
+    def _on_close_request(self, *_args) -> bool:
+        """Closing the window hides it and keeps Cloudy running in the
+        background (Quit with Ctrl+Q or GNOME's Background Apps menu to exit).
+        When background mode is off, fall through to a normal close."""
+        app = self.get_application()
+        if app is not None and app.wants_background():
+            app.enter_background(self)
+            return True  # handled: don't destroy the window
+        return False
 
     # -- sidebar ----------------------------------------------------------
     def _refresh_sidebar(self) -> None:
@@ -78,7 +90,10 @@ class CloudyWindow(Adw.ApplicationWindow):
 
         module = self._engine.get(account.module_id)
         icon = module.icon_name if module else "avatar-default-symbolic"
-        subtitle = _("Signed in") if account.signed_in else _("Sign-in pending")
+        if module is not None and not self._engine.is_enabled(account.module_id):
+            subtitle = _("Turned off")
+        else:
+            subtitle = _("Signed in") if account.signed_in else _("Sign-in pending")
         row = Adw.ActionRow(title=esc(account.display_name), subtitle=subtitle)
         row.add_prefix(Gtk.Image.new_from_icon_name(icon))
         row.set_activatable(True)
@@ -109,6 +124,9 @@ class CloudyWindow(Adw.ApplicationWindow):
     # -- per-account content ---------------------------------------------
     def _show_account(self, account) -> None:
         module = self._engine.get(account.module_id)
+        if module is not None and not self._engine.is_enabled(account.module_id):
+            self._show_disabled_account(account)
+            return
         caps = capabilities_of(module) if module else []
 
         stack = Adw.ViewStack()
@@ -126,11 +144,19 @@ class CloudyWindow(Adw.ApplicationWindow):
             page = stack.add_titled(child, key, label)
             page.set_icon_name(icon)
 
+        # Re-open on the tab the user last left for this account.
+        remembered = self._last_tab.get(account.id)
+        if remembered and stack.get_child_by_name(remembered) is not None:
+            stack.set_visible_child_name(remembered)
+        stack.connect("notify::visible-child-name", self._on_tab_changed)
+
         header = Adw.HeaderBar()
         switcher = Adw.ViewSwitcher(policy=Adw.ViewSwitcherPolicy.WIDE)
         switcher.set_stack(stack)
         header.set_title_widget(switcher)
-        header.pack_end(self._account_menu_button(account))
+        # Account sign-in/out/remove live in Preferences → Accounts now; each tab
+        # carries its own contextual settings (e.g. the calendar's Calendars
+        # popover). The header just switches tabs and refreshes.
         refresh = Gtk.Button(icon_name="view-refresh-symbolic", tooltip_text=_("Refresh"))
         refresh.connect("clicked", lambda *_: self._refresh_account(account))
         header.pack_end(refresh)
@@ -143,9 +169,41 @@ class CloudyWindow(Adw.ApplicationWindow):
         page.set_child(toolbar)
         self.content_nav.replace([page])
 
+    def _on_tab_changed(self, stack, _pspec) -> None:
+        name = stack.get_visible_child_name()
+        if self._account_shown and name:
+            self._last_tab[self._account_shown] = name
+
+    def _show_disabled_account(self, account) -> None:
+        self._account_stack = None
+        self._account_mail_view = None
+        self._account_shown = account.id
+        status = Adw.StatusPage(
+            icon_name="action-unavailable-symbolic",
+            title=_("%s is turned off") % account.display_name,
+            description=_("Enable this account in Preferences → Accounts."),
+        )
+        header = Adw.HeaderBar()
+        toolbar = Adw.ToolbarView()
+        toolbar.add_top_bar(header)
+        toolbar.set_content(status)
+        page = Adw.NavigationPage(title=account.display_name, tag=f"account:{account.id}")
+        page.set_child(toolbar)
+        self.content_nav.replace([page])
+
     def _refresh_account(self, account) -> None:
         self.get_application().cache.invalidate(prefix=account.id)
         self._show_account(account)
+
+    # -- account actions exposed to Preferences ---------------------------
+    def sign_in_account(self, account) -> None:
+        self._on_sign_in(account)
+
+    def sign_out_account(self, account) -> None:
+        self._sign_out(account)
+
+    def remove_account(self, account) -> None:
+        self._remove_account(account)
 
     # -- deep links (e.g. from the dashboard) -----------------------------
     def open_mail(self, account, message_id) -> None:
@@ -157,6 +215,15 @@ class CloudyWindow(Adw.ApplicationWindow):
             self._account_stack.set_visible_child_name("mail")
         if self._account_mail_view is not None:
             self._account_mail_view.open_message(message_id)
+
+    def open_account_tab(self, account, tab) -> None:
+        """Show an account and switch to its Files/Mail/Calendar tab (used by the
+        Dashboard's pinned-source shortcuts)."""
+        self._select_sidebar_account(account.id)
+        if self._account_shown != account.id:
+            return
+        if self._account_stack is not None:
+            self._account_stack.set_visible_child_name(tab)
 
     def _select_sidebar_account(self, account_id) -> None:
         row = self.sidebar_list.get_first_child()
@@ -285,16 +352,19 @@ class CloudyWindow(Adw.ApplicationWindow):
             GraphAuth,
             SCOPES_BASE,
             SCOPES_FILES,
+            SCOPES_GROUPS,
             SCOPES_MAIL,
+            SCOPES_MAIL_SHARED,
             SCOPES_TEAMS,
         )
 
         try:
             auth = GraphAuth(client_id, secrets, account.id)
             # Request all capability scopes up front so a single consent covers
-            # Files, Teams, Mail and Calendar (silent tokens work everywhere).
+            # Files, Teams, Mail, Calendar, group + shared mailboxes/calendars.
             result = auth.sign_in_interactive(
-                SCOPES_BASE + SCOPES_FILES + SCOPES_TEAMS + SCOPES_MAIL
+                SCOPES_BASE + SCOPES_FILES + SCOPES_TEAMS + SCOPES_GROUPS
+                + SCOPES_MAIL + SCOPES_MAIL_SHARED
             )
             try:
                 ident = GraphAuth.fetch_userprincipalname(result["access_token"])
@@ -354,6 +424,62 @@ class CloudyWindow(Adw.ApplicationWindow):
     def open_uri(self, uri: str) -> None:
         """Open a URI via the portal-aware launcher, on the main thread."""
         GLib.idle_add(lambda: (Gtk.show_uri(self, uri, 0), False)[1])
+
+    # -- system handler entry points (mailto: / .ics) ---------------------
+    def _default_mail_account(self):
+        """First signed-in mail/calendar-capable account (for system handoffs)."""
+        for account in self._registry.accounts():
+            if account.signed_in and account.provider in ("microsoft", "google"):
+                return account
+        return None
+
+    def open_compose_from_mailto(self, uri: str) -> None:
+        """Open the compose dialog for a ``mailto:`` URI (default-mail-app role)."""
+        from urllib.parse import parse_qs, unquote, urlparse
+
+        account = self._default_mail_account()
+        if account is None:
+            self.add_toast(_("Sign in to an account to send mail."))
+            return
+        parsed = urlparse(uri)
+        to = unquote(parsed.path)
+        query = parse_qs(parsed.query)
+        subject = query.get("subject", [""])[0]
+        body = query.get("body", [""])[0]
+
+        from .widgets.compose_view import ComposeWindow
+
+        def send(recipients, subj, bod):
+            from .widgets.clients import build_account_client
+
+            client = build_account_client(self.get_application(), account)
+            client.send_mail(to=recipients, subject=subj, body=bod)
+
+        ComposeWindow(self, account, from_label=account.display_name, send_fn=send,
+                      to=to, subject=subject, body=body).present()
+
+    def open_event_from_ics(self, path: str) -> None:
+        """Open the New event dialog pre-filled from an ``.ics`` file."""
+        account = self._default_mail_account()
+        if account is None:
+            self.add_toast(_("Sign in to an account to add the event."))
+            return
+        from .widgets.event_compose import EventWindow, parse_ics
+
+        try:
+            initial = parse_ics(path)
+        except OSError as exc:
+            self.add_toast(_("Couldn't read the invite: %s") % exc)
+            return
+
+        def create(**fields):
+            from .widgets.clients import build_account_client
+
+            client = build_account_client(self.get_application(), account)
+            return client.create_event(**fields)
+
+        EventWindow(self, on_calendar=account.display_name, create_fn=create,
+                    initial=initial, title=_("Add event")).present()
 
     # -- helpers ----------------------------------------------------------
     def add_toast(self, message: str) -> None:

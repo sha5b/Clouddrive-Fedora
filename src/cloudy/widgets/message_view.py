@@ -74,16 +74,21 @@ def _wrap_html(content: str, is_html: bool) -> str:
 
 
 def _body_widget(msg: dict) -> Gtk.Widget:
-    """A WebKit view of the body, or a plain-text label if WebKit is missing."""
-    content = msg.get("body", "") or ""
-    is_html = msg.get("body_html", False)
+    return html_body_widget(msg.get("body", "") or "", msg.get("body_html", False))
 
+
+def html_body_widget(content: str, is_html: bool) -> Gtk.Widget:
+    """A WebKit view of an HTML/plain body (links open externally), or a
+    plain-text label fallback if WebKitGTK isn't available. Reused by the mail
+    reader and the calendar event detail."""
+    content = content or ""
+    from ..core.gi_compat import require
+
+    if require("WebKit", ("6.0", "6.1")) is None:
+        return _text_fallback(content)  # no WebKitGTK on this runtime
     try:
-        import gi
-
-        gi.require_version("WebKit", "6.0")
         from gi.repository import Gdk, Gio, WebKit
-    except (ValueError, ImportError):
+    except ImportError:
         return _text_fallback(content)
 
     view = WebKit.WebView(vexpand=True, hexpand=True)

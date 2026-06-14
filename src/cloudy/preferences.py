@@ -1,6 +1,14 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # SPDX-FileCopyrightText: 2026 Fiber Elements
-"""Preferences: General (mount location, cache mode, autostart) + Modules."""
+"""Preferences, split cleanly in two:
+
+* **General** — app-wide file setup: where libraries mount, the mount layout
+  (one folder vs. individual), file caching, the default sync type (streaming
+  vs. full offline copy), and startup.
+* **Accounts** — per account: an on/off switch for its services, sign
+  in/out/remove, plus (in an expander) whether to sync that account's files
+  offline and where it mounts.
+"""
 
 from gettext import gettext as _
 from pathlib import Path
@@ -18,8 +26,11 @@ class CloudyPreferences(Adw.PreferencesDialog):
         self._settings = settings
         self._app = app
 
+        self._account_rows = []
+        self._reg_handler = None
+
         self.add(self._general_page())
-        self.add(self._modules_page())
+        self.add(self._accounts_page())
 
     # -- General ----------------------------------------------------------
     def _general_page(self) -> Adw.PreferencesPage:
@@ -31,7 +42,7 @@ class CloudyPreferences(Adw.PreferencesDialog):
         )
         page.add(files)
 
-        # Mount location
+        # Mount location (the base folder).
         self._location_row = Adw.ActionRow(title=_("Mount location"))
         self._location_row.set_subtitle(self._mount_location_display())
         choose = Gtk.Button(label=_("Choose…"), valign=Gtk.Align.CENTER)
@@ -39,19 +50,47 @@ class CloudyPreferences(Adw.PreferencesDialog):
         self._location_row.add_suffix(choose)
         files.add(self._location_row)
 
-        # Cache mode
+        # Mount layout: one shared folder vs. per-account folders.
+        layout = Adw.ComboRow(title=_("Mount layout"))
+        layout.set_subtitle(_("One folder for all, or a folder per account."))
+        self._layout_values = ["one-folder", "individual"]
+        lm = Gtk.StringList()
+        lm.append(_("One folder (subfolder per library)"))
+        lm.append(_("Individual (each account picks its folder)"))
+        layout.set_model(lm)
+        layout.set_selected(self._index_of("mount-layout", self._layout_values))
+        layout.connect("notify::selected", self._on_layout_changed)
+        files.add(layout)
+
+        # Cache mode.
         cache = Adw.ComboRow(title=_("File caching"))
-        model = Gtk.StringList()
         self._cache_values = ["full", "minimal"]
-        model.append(_("On-demand (cache opened files)"))
-        model.append(_("Streaming (minimal disk use)"))
-        cache.set_model(model)
-        current = self._settings.get_string("cache-mode")
-        cache.set_selected(self._cache_values.index(current) if current in self._cache_values else 0)
+        cm = Gtk.StringList()
+        cm.append(_("On-demand (cache opened files)"))
+        cm.append(_("Streaming (minimal disk use)"))
+        cache.set_model(cm)
+        cache.set_selected(self._index_of("cache-mode", self._cache_values))
         cache.connect("notify::selected", self._on_cache_changed)
         files.add(cache)
 
-        page.add(self._sync_group())
+        # Sync type (the default an account uses when you enable file sync).
+        sync = Adw.PreferencesGroup(
+            title=_("Sync"),
+            description=_(
+                "How files sync when you enable it for an account (below, on the "
+                "Accounts page)."
+            ),
+        )
+        page.add(sync)
+        sync_type = Adw.ComboRow(title=_("Sync type"))
+        self._sync_values = ["stream", "full"]
+        sm = Gtk.StringList()
+        sm.append(_("Streaming (mount on demand, no local copy)"))
+        sm.append(_("Full sync (two-way offline copy on disk)"))
+        sync_type.set_model(sm)
+        sync_type.set_selected(self._index_of("default-sync-type", self._sync_values))
+        sync_type.connect("notify::selected", self._on_sync_type_changed)
+        sync.add(sync_type)
 
         startup = Adw.PreferencesGroup(title=_("Startup"))
         page.add(startup)
@@ -63,36 +102,165 @@ class CloudyPreferences(Adw.PreferencesDialog):
         autostart.connect("notify::active", self._on_autostart_changed)
         startup.add(autostart)
 
+        # Notifications & background behaviour.
+        integ = Adw.PreferencesGroup(
+            title=_("Notifications & background"),
+            description=_("How Cloudy talks to the rest of your desktop."),
+        )
+        page.add(integ)
+
+        notify = Adw.SwitchRow(
+            title=_("Desktop notifications"),
+            subtitle=_("Alert me about new mail and upcoming events."))
+        self._settings.bind("notifications-enabled", notify, "active",
+                            Gio.SettingsBindFlags.DEFAULT)
+        integ.add(notify)
+
+        background = Adw.SwitchRow(
+            title=_("Keep running in the background"),
+            subtitle=_("Closing the window hides it; quit with Ctrl+Q."))
+        self._settings.bind("run-in-background", background, "active",
+                            Gio.SettingsBindFlags.DEFAULT)
+        integ.add(background)
+
+        eds = Adw.SwitchRow(
+            title=_("Show events in the GNOME calendar"),
+            subtitle=_("Mirror your calendar into the top-bar calendar (Evolution)."))
+        self._settings.bind("eds-publish-enabled", eds, "active",
+                            Gio.SettingsBindFlags.DEFAULT)
+        integ.add(eds)
+
         return page
 
-    # -- per-account offline sync ----------------------------------------
-    def _sync_group(self) -> Adw.PreferencesGroup:
-        group = Adw.PreferencesGroup(
-            title=_("Offline sync"),
-            description=_(
-                "Keep a two-way synced copy of an account's libraries on this "
-                "computer (under ~/.local/share/cloudy/synced). Local edits "
-                "upload and cloud changes download automatically."
-            ),
+    # -- Accounts ---------------------------------------------------------
+    def _accounts_page(self) -> Adw.PreferencesPage:
+        page = Adw.PreferencesPage(title=_("Accounts"),
+                                   icon_name="system-users-symbolic")
+        self._accounts_group = Adw.PreferencesGroup(
+            title=_("Accounts"),
+            description=_("Sign in, sign out, and choose how each account's files sync."),
         )
-        registry = getattr(self._app, "registry", None)
-        accounts = [a for a in registry.accounts() if a.signed_in] if registry else []
-        if not accounts:
-            group.add(Adw.ActionRow(
-                title=_("No signed-in accounts"),
-                subtitle=_("Sign in to an account to enable offline sync."),
-            ))
-            return group
-        for account in accounts:
-            row = Adw.SwitchRow(
-                title=account.display_name,
-                subtitle=_("Keep a two-way synced offline copy"),
-            )
-            row.set_active(getattr(account, "full_sync", False))
-            row.connect("notify::active", self._on_sync_toggled, account)
-            group.add(row)
-        return group
+        add_btn = Gtk.Button(icon_name="list-add-symbolic", valign=Gtk.Align.CENTER,
+                             tooltip_text=_("Add account"))
+        add_btn.add_css_class("flat")
+        add_btn.connect("clicked", lambda *_: self._app.activate_action("add-account", None))
+        self._accounts_group.set_header_suffix(add_btn)
+        page.add(self._accounts_group)
 
+        self._rebuild_accounts()
+        registry = getattr(self._app, "registry", None)
+        if registry is not None:
+            self._reg_handler = registry.connect(
+                "changed", lambda *_: self._rebuild_accounts()
+            )
+            self.connect("closed", self._on_closed)
+        return page
+
+    def _on_closed(self, *_args) -> None:
+        registry = getattr(self._app, "registry", None)
+        if registry is not None and self._reg_handler is not None:
+            registry.disconnect(self._reg_handler)
+            self._reg_handler = None
+
+    def _rebuild_accounts(self) -> None:
+        for row in self._account_rows:
+            self._accounts_group.remove(row)
+        self._account_rows = []
+        registry = getattr(self._app, "registry", None)
+        accounts = registry.accounts() if registry else []
+        if not accounts:
+            row = Adw.ActionRow(
+                title=_("No accounts yet"),
+                subtitle=_("Use + to add a Microsoft 365 or Google account."),
+            )
+            self._accounts_group.add(row)
+            self._account_rows.append(row)
+            return
+        for account in accounts:
+            row = self._account_row(account)
+            self._accounts_group.add(row)
+            self._account_rows.append(row)
+
+    def _account_row(self, account) -> Adw.ExpanderRow:
+        from .widgets.format import esc
+
+        status = _("Signed in") if account.signed_in else _("Signed out")
+        row = Adw.ExpanderRow(title=esc(account.display_name), subtitle=status)
+        row.add_prefix(Gtk.Image.new_from_icon_name(
+            "emblem-ok-symbolic" if account.signed_in else "action-unavailable-symbolic"
+        ))
+
+        # Activate/deactivate this account's services (replaces the Modules tab).
+        active = Gtk.Switch(valign=Gtk.Align.CENTER,
+                            tooltip_text=_("Turn this account's services on or off"))
+        active.set_active(self._engine.is_enabled(account.module_id))
+        active.connect("notify::active", self._on_account_active, account)
+        row.add_suffix(active)
+
+        # Sign in/out + remove as row suffixes.
+        if account.signed_in:
+            auth = Gtk.Button(label=_("Sign Out"), valign=Gtk.Align.CENTER)
+            auth.connect("clicked", lambda *_: self._account_action("sign_out_account", account))
+        else:
+            auth = Gtk.Button(label=_("Sign In"), valign=Gtk.Align.CENTER)
+            auth.add_css_class("suggested-action")
+            auth.connect("clicked", lambda *_: self._account_action("sign_in_account", account))
+        row.add_suffix(auth)
+        remove = Gtk.Button(icon_name="user-trash-symbolic", valign=Gtk.Align.CENTER,
+                            tooltip_text=_("Remove account"))
+        remove.add_css_class("flat")
+        remove.connect("clicked", lambda *_: self._account_action("remove_account", account))
+        row.add_suffix(remove)
+
+        # Per-account file settings (greyed out until their prerequisite in
+        # General is set, so the options are always discoverable).
+        row.add_row(self._sync_row(account))
+        row.add_row(self._mount_location_row(account))
+        return row
+
+    def _sync_row(self, account) -> Adw.SwitchRow:
+        full = self._setting_str("default-sync-type") == "full"
+        sub = (_("Keep a two-way offline copy of this account's files")
+               if full else
+               _("Set Sync type to “Full sync” in General to enable"))
+        sync_row = Adw.SwitchRow(title=_("Sync files offline"), subtitle=sub)
+        sync_row.set_sensitive(full and account.signed_in)
+        sync_row.set_active(bool(getattr(account, "full_sync", False)) and full)
+        sync_row.connect("notify::active", self._on_sync_toggled, account)
+        return sync_row
+
+    def _mount_location_row(self, account) -> Adw.ActionRow:
+        individual = self._setting_str("mount-layout") == "individual"
+        if individual:
+            loc = account.mount_location or _("Default (%s)") % self._mount_location_display()
+        else:
+            loc = _("Set Mount layout to “Individual” in General to choose")
+        row = Adw.ActionRow(title=_("Mount location"), subtitle=loc)
+        row.set_sensitive(individual)
+        choose = Gtk.Button(label=_("Choose…"), valign=Gtk.Align.CENTER)
+        choose.connect("clicked", lambda *_: self._on_choose_account_location(account, row))
+        row.add_suffix(choose)
+        if individual and account.mount_location:
+            clear = Gtk.Button(icon_name="edit-clear-symbolic", valign=Gtk.Align.CENTER,
+                               tooltip_text=_("Use the default location"))
+            clear.add_css_class("flat")
+            clear.connect("clicked", lambda *_: self._set_account_location(account, "", row))
+            row.add_suffix(clear)
+        return row
+
+    def _on_account_active(self, switch, _param, account) -> None:
+        self._engine.set_enabled(account.module_id, switch.get_active())
+        # Refresh the main window's sidebar so the on/off state shows there too.
+        registry = getattr(self._app, "registry", None)
+        if registry is not None:
+            registry.emit("changed")
+
+    def _account_action(self, method: str, account) -> None:
+        window = self._app.props.active_window if self._app else None
+        if window is not None and hasattr(window, method):
+            getattr(window, method)(account)
+
+    # -- per-account sync toggle -----------------------------------------
     def _on_sync_toggled(self, row, _param, account) -> None:
         enabled = row.get_active()
         account.full_sync = enabled
@@ -106,6 +274,29 @@ class CloudyPreferences(Adw.PreferencesDialog):
         else:
             manager.disable(account)
 
+    # -- per-account mount location --------------------------------------
+    def _on_choose_account_location(self, account, row) -> None:
+        dialog = Gtk.FileDialog(title=_("Choose mount location for %s") % account.display_name)
+        dialog.select_folder(
+            self.get_root(), None,
+            lambda d, r: self._on_account_location_chosen(d, r, account, row),
+        )
+
+    def _on_account_location_chosen(self, dialog, result, account, row) -> None:
+        try:
+            folder = dialog.select_folder_finish(result)
+        except GLib.Error:
+            return
+        if folder is not None:
+            self._set_account_location(account, folder.get_path(), row)
+
+    def _set_account_location(self, account, path: str, row) -> None:
+        account.mount_location = path
+        if getattr(self._app, "registry", None) is not None:
+            self._app.registry.update(account)
+        row.set_subtitle(path or _("Default (%s)") % self._mount_location_display())
+
+    # -- General settings handlers ---------------------------------------
     def _mount_location_display(self) -> str:
         loc = self._settings.get_string("mount-location")
         if not loc:
@@ -125,31 +316,29 @@ class CloudyPreferences(Adw.PreferencesDialog):
             self._settings.set_string("mount-location", folder.get_path())
             self._location_row.set_subtitle(self._mount_location_display())
 
+    def _on_layout_changed(self, combo, _param) -> None:
+        self._settings.set_string("mount-layout", self._layout_values[combo.get_selected()])
+        self._rebuild_accounts()  # show/hide the per-account location rows
+
     def _on_cache_changed(self, combo, _param) -> None:
         self._settings.set_string("cache-mode", self._cache_values[combo.get_selected()])
+
+    def _on_sync_type_changed(self, combo, _param) -> None:
+        self._settings.set_string("default-sync-type", self._sync_values[combo.get_selected()])
+        self._rebuild_accounts()  # refresh the per-account sync toggles' state
 
     def _on_autostart_changed(self, switch, _param) -> None:
         enabled = switch.get_active()
         self._settings.set_boolean("autostart", enabled)
         _write_autostart(enabled)
 
-    # -- Modules ----------------------------------------------------------
-    def _modules_page(self) -> Adw.PreferencesPage:
-        page = Adw.PreferencesPage(title=_("Modules"), icon_name="puzzle-piece-symbolic")
-        group = Adw.PreferencesGroup(
-            title=_("Service Modules"),
-            description=_("Enable the services you want Cloudy to manage."),
-        )
-        page.add(group)
-        for module in self._engine.modules():
-            row = Adw.SwitchRow(title=module.name, subtitle=module.id)
-            row.set_active(self._engine.is_enabled(module.id))
-            row.connect(
-                "notify::active",
-                lambda r, _p, mid=module.id: self._engine.set_enabled(mid, r.get_active()),
-            )
-            group.add(row)
-        return page
+    # -- settings helpers -------------------------------------------------
+    def _setting_str(self, key: str) -> str:
+        return self._settings.get_string(key)
+
+    def _index_of(self, key: str, values: list) -> int:
+        current = self._settings.get_string(key)
+        return values.index(current) if current in values else 0
 
 
 def _write_autostart(enabled: bool) -> None:
