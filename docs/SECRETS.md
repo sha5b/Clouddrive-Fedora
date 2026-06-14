@@ -19,24 +19,22 @@ committed; real secrets live outside the source tree.
 
 ## Where real credentials live (never in git)
 
-The app reads `CLOUDY_*` environment variables. On startup it also loads them
-from a file **outside the repo**:
-
-```
-~/.config/cloudy/secrets.env
-```
-
-Example (this file is NOT in the repository):
+Copy the committed template to a gitignored `.env` and fill it in:
 
 ```sh
-# ~/.config/cloudy/secrets.env
+cp .env.example .env      # .env is gitignored; .env.example is the template
+# edit .env:
 CLOUDY_GOOGLE_CLIENT_ID=xxxxxxxx.apps.googleusercontent.com
 CLOUDY_GOOGLE_CLIENT_SECRET=GOCSPX-xxxxxxxx
-# CLOUDY_MS_CLIENT_ID is already baked in; override here only to use your own.
 ```
 
-`.gitignore` also blocks `secrets.env`, `*.secret`, `*.local`,
-`client_secret*.json` as a backstop.
+On startup the app loads `CLOUDY_*` from, in priority order (already-set env
+wins): `$CLOUDY_ENV_FILE` → `./.env` → `~/.config/cloudy/secrets.env`. So `.env`
+in the project is the reproducible dev path; `~/.config/cloudy/secrets.env` is a
+user-global fallback.
+
+`.gitignore` blocks `.env`, `secrets.env`, `*.secret`, `*.local`,
+`client_secret*.json` (but keeps `.env.example`).
 
 ## Shipping a build with credentials (release pipeline)
 

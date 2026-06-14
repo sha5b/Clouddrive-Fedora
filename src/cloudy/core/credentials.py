@@ -1,16 +1,17 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # SPDX-FileCopyrightText: 2026 Fiber Elements
-"""Load OAuth credentials from a file OUTSIDE the source tree.
+"""Load OAuth credentials from dotenv files, never from committed source.
 
-Keeps real secrets (e.g. the Google client secret) out of the public repo. On
-startup we read ``$XDG_CONFIG_HOME/cloudy/secrets.env`` (default
-``~/.config/cloudy/secrets.env``) — a simple ``KEY=VALUE`` file — into the
-environment, without overriding values already set. The app's client-id getters
-read these env vars (CLOUDY_MS_CLIENT_ID / CLOUDY_GOOGLE_CLIENT_ID /
-CLOUDY_GOOGLE_CLIENT_SECRET).
+On startup we populate ``CLOUDY_*`` env vars from the first file that defines
+them, in priority order (a key already in the environment always wins):
 
-For shipped builds, the release pipeline injects the same values from a CI
-secret store — never from committed source. See docs/SECRETS.md.
+  1. ``$CLOUDY_ENV_FILE`` (explicit override)
+  2. ``./.env`` — the project ``.env`` (copied from ``.env.example``; gitignored)
+  3. ``$XDG_CONFIG_HOME/cloudy/secrets.env`` — a user-global fallback
+
+The app's getters read CLOUDY_MS_CLIENT_ID / CLOUDY_GOOGLE_CLIENT_ID /
+CLOUDY_GOOGLE_CLIENT_SECRET. For shipped builds, a release pipeline injects the
+same values from a CI secret store. See docs/SECRETS.md.
 """
 
 from __future__ import annotations
@@ -22,19 +23,22 @@ from gi.repository import GLib
 _PREFIX = "CLOUDY_"
 
 
-def secrets_path() -> str:
-    return os.path.join(GLib.get_user_config_dir(), "cloudy", "secrets.env")
+def _candidate_paths() -> list[str]:
+    paths = []
+    explicit = os.environ.get("CLOUDY_ENV_FILE")
+    if explicit:
+        paths.append(explicit)
+    paths.append(os.path.join(os.getcwd(), ".env"))
+    paths.append(os.path.join(GLib.get_user_config_dir(), "cloudy", "secrets.env"))
+    return paths
 
 
-def load_local_env() -> None:
-    """Populate CLOUDY_* env vars from the local secrets file, if present."""
-    path = secrets_path()
+def _apply(path: str) -> None:
     try:
         with open(path, encoding="utf-8") as handle:
             lines = handle.readlines()
     except OSError:
         return
-
     for raw in lines:
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
@@ -44,3 +48,9 @@ def load_local_env() -> None:
         value = value.strip().strip('"').strip("'")
         if key.startswith(_PREFIX) and not os.environ.get(key):
             os.environ[key] = value
+
+
+def load_local_env() -> None:
+    """Populate CLOUDY_* env vars from the first dotenv file that defines them."""
+    for path in _candidate_paths():
+        _apply(path)
