@@ -6,7 +6,18 @@ from __future__ import annotations
 
 import re
 
+from gi.repository import GLib
+
 _ANGLE_RE = re.compile(r"^(.*?)<([^>]+)>\s*$")
+
+
+def esc(text: str) -> str:
+    """Escape text for Adw/Gtk widgets that parse Pango markup in titles.
+
+    Without this, a literal '&' or '<' in a name (e.g. "60_R&D") breaks the
+    markup parser and the label renders blank.
+    """
+    return GLib.markup_escape_text(text or "")
 
 
 def sender_name(value: str) -> str:

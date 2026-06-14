@@ -131,7 +131,8 @@ class GraphClient:
             except GraphError:
                 continue  # some teams have no provisioned files / no access
             drive = self._drive_from_json(d)
-            drive.name = team.get("displayName", drive.name)  # show the TEAM name
+            # Show the TEAM name; fall back if displayName is empty/missing.
+            drive.name = team.get("displayName") or drive.name or "Untitled Team"
             drive.kind = "team"
             out.append(drive)
         return out
@@ -162,11 +163,14 @@ class GraphClient:
         ]
 
     def list_messages(self, folder_id: str = "inbox", *, limit: int = 25) -> list[dict]:
+        # Keep $/commas literal (Graph-friendly); only the space in the orderby
+        # value needs encoding (a raw space makes urllib reject the URL).
+        orderby = urllib.parse.quote("receivedDateTime desc")
         path = (
             f"/me/mailFolders/{folder_id}/messages"
             f"?$top={limit}"
             f"&$select=subject,from,receivedDateTime,bodyPreview,isRead,importance,flag"
-            f"&$orderby=receivedDateTime desc"
+            f"&$orderby={orderby}"
         )
         data = self._get(path, SCOPES_MAIL)
         out = []

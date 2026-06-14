@@ -64,7 +64,9 @@ def make_message_page(msg: dict) -> Adw.NavigationPage:
     scrolled.set_child(view)
     box.append(scrolled)
 
-    title = (msg.get("subject") or _("Message"))[:40]
+    from .format import esc
+
+    title = esc((msg.get("subject") or _("Message"))[:40])
     page = Adw.NavigationPage(title=title, tag="message")
     page.set_child(toolbar)
     return page

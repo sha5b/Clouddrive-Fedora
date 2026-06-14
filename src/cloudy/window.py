@@ -70,10 +70,12 @@ class CloudyWindow(Adw.ApplicationWindow):
         return row
 
     def _make_account_row(self, account) -> Gtk.ListBoxRow:
+        from .widgets.format import esc
+
         module = self._engine.get(account.module_id)
         icon = module.icon_name if module else "avatar-default-symbolic"
         subtitle = _("Signed in") if account.signed_in else _("Sign-in pending")
-        row = Adw.ActionRow(title=account.display_name, subtitle=subtitle)
+        row = Adw.ActionRow(title=esc(account.display_name), subtitle=subtitle)
         row.add_prefix(Gtk.Image.new_from_icon_name(icon))
         row.set_activatable(True)
         row._account_id = account.id  # carry the id for selection

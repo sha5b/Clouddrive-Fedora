@@ -64,11 +64,14 @@ class CalendarView(Adw.Bin):
         return False
 
     def _event_row(self, event) -> Adw.ActionRow:
+        from .format import esc
+
         when = _format_range(event.get("start", ""), event.get("end", ""), event.get("all_day"))
         subtitle = when
         if event.get("location"):
             subtitle = f"{when} · {event['location']}" if when else event["location"]
-        row = Adw.ActionRow(title=event["subject"], subtitle=subtitle)
+        row = Adw.ActionRow(title=esc(event.get("subject") or _("(no title)")),
+                            subtitle=esc(subtitle))
         row.add_prefix(Gtk.Image.new_from_icon_name("x-office-calendar-symbolic"))
         return row
 

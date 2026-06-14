@@ -110,20 +110,23 @@ class DashboardView(Adw.Bin):
 
     # -- rows -------------------------------------------------------------
     def _event_row(self, account, ev) -> Adw.ActionRow:
+        from .format import esc
+
         when = _fmt(ev.get("start", ""), ev.get("all_day"))
         subtitle = f"{when} · {account.display_name}" if when else account.display_name
-        row = Adw.ActionRow(title=ev.get("subject", _("(no title)")), subtitle=subtitle)
+        row = Adw.ActionRow(title=esc(ev.get("subject") or _("(no title)")),
+                            subtitle=esc(subtitle))
         row.add_prefix(Gtk.Image.new_from_icon_name("x-office-calendar-symbolic"))
         if ev.get("location"):
             row.add_suffix(Gtk.Label(label=ev["location"], css_classes=["dim-label"]))
         return row
 
     def _mail_row(self, account, msg) -> Adw.ActionRow:
-        from .format import sender_name
+        from .format import esc, sender_name
 
         subtitle = f"{sender_name(msg.get('from', ''))} · {account.display_name}"
-        row = Adw.ActionRow(title=msg.get("subject") or _("(no subject)"),
-                            subtitle=subtitle)
+        row = Adw.ActionRow(title=esc(msg.get("subject") or _("(no subject)")),
+                            subtitle=esc(subtitle))
         row.set_title_lines(1)
         row.set_subtitle_lines(1)
         if not msg.get("is_read", True):

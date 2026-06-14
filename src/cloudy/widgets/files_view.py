@@ -113,8 +113,10 @@ class FilesView(Adw.Bin):
         return False
 
     def _drive_row(self, drive, is_team) -> Adw.ActionRow:
+        from .format import esc
+
         subtitle = _("Team library") if is_team else drive.kind
-        row = Adw.ActionRow(title=drive.name, subtitle=subtitle)
+        row = Adw.ActionRow(title=esc(drive.name), subtitle=esc(subtitle))
         icon = "system-users-symbolic" if is_team else "folder-remote-symbolic"
         row.add_prefix(Gtk.Image.new_from_icon_name(icon))
 
