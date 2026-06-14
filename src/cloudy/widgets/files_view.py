@@ -125,20 +125,43 @@ class FilesView(Adw.Bin):
 
     # -- actions ----------------------------------------------------------
     def _mount(self, drive) -> None:
-        try:
-            info = self._mounts.mount(
-                name=drive.name,
-                remote=self._mounts._safe_name(drive.name),
-                drive_id=drive.id,
-            )
-        except Exception as exc:  # noqa: BLE001
-            self._window.add_toast(_("Mount failed: %s") % exc)
+        if self._mounts.preferred_backend() is None:
+            self._window.add_toast(_("No mount backend available."))
             return
+        secrets = self._window.get_application().secrets
+        token = secrets.lookup(self._account.id, "rclone-onedrive")
+        if not token:
+            self._window.add_toast(_("Opening your browser to connect OneDrive…"))
+        threading.Thread(
+            target=self._mount_worker, args=(drive, secrets, token), daemon=True
+        ).start()
+
+    def _mount_worker(self, drive, secrets, token) -> None:
+        try:
+            # One rclone browser auth per account; reused for every library.
+            if not token:
+                token = self._mounts.authorize_onedrive()
+                secrets.store(self._account.id, "rclone-onedrive", token)
+
+            remote = self._mounts._safe_name(drive.name)
+            self._mounts.create_onedrive_remote(
+                remote, token, drive.id, self._mounts.drive_type_for(drive.kind)
+            )
+            info = self._mounts.mount(name=drive.name, remote=remote, drive_id=drive.id)
+            GLib.idle_add(self._on_mounted, drive, info, None)
+        except Exception as exc:  # noqa: BLE001
+            GLib.idle_add(self._on_mounted, drive, None, str(exc))
+
+    def _on_mounted(self, drive, info, error) -> bool:
+        if error:
+            self._window.add_toast(_("Mount failed: %s") % error)
+            return False
         self._window.add_toast(
             _("%s is now in your Files sidebar.") % drive.name
-            if info.active
+            if info and info.active
             else _("Mount requested for %s.") % drive.name
         )
+        return False
 
     def _open(self, drive) -> None:
         uri = self._mounts.mountpoint_for(drive.name).as_uri()

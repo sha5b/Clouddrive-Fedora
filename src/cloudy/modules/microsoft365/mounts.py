@@ -106,6 +106,70 @@ class MountManager:
             "--daemon",
         ]
 
+    # -- rclone OneDrive auth + remote config ----------------------------
+    @staticmethod
+    def drive_type_for(kind: str) -> str:
+        """Map our Drive.kind to rclone's onedrive drive_type."""
+        return {
+            "personal": "personal",
+            "business": "business",
+            "documentLibrary": "documentLibrary",
+            "team": "documentLibrary",
+        }.get(kind, "documentLibrary")
+
+    def has_remote(self, remote: str) -> bool:
+        rc = RCLONE.path()
+        if not rc:
+            return False
+        out = subprocess.run([rc, "listremotes"], capture_output=True, text=True)
+        return f"{remote}:" in out.stdout.split()
+
+    def authorize_onedrive(self, timeout: int = 300) -> str:
+        """Run rclone's own browser OAuth (its built-in app = no registration).
+
+        Opens the system browser, waits for the redirect, and returns the token
+        JSON blob rclone emits. Blocking — call off the UI thread.
+        """
+        rc = RCLONE.path()
+        if not rc:
+            raise RuntimeError("rclone is not available")
+        proc = subprocess.run(
+            [rc, "authorize", "onedrive"],
+            capture_output=True, text=True, timeout=timeout,
+        )
+        blob = (proc.stdout or "") + "\n" + (proc.stderr or "")
+        # rclone prints the token as a JSON object between paste markers.
+        start = blob.find("{")
+        end = blob.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            raise RuntimeError(
+                "rclone authorization did not return a token "
+                f"(exit {proc.returncode})"
+            )
+        return blob[start : end + 1].strip()
+
+    def create_onedrive_remote(
+        self, remote: str, token_json: str, drive_id: str, drive_type: str
+    ) -> None:
+        rc = RCLONE.path()
+        if not rc:
+            raise RuntimeError("rclone is not available")
+        subprocess.run(
+            [
+                rc, "config", "create", remote, "onedrive",
+                f"token={token_json}",
+                f"drive_id={drive_id}",
+                f"drive_type={drive_type}",
+                "--non-interactive",
+            ],
+            check=True, capture_output=True, text=True,
+        )
+
+    def delete_remote(self, remote: str) -> None:
+        rc = RCLONE.path()
+        if rc and self.has_remote(remote):
+            subprocess.run([rc, "config", "delete", remote], check=False)
+
     # -- mount / unmount --------------------------------------------------
     def mount(self, *, name: str, remote: str, backend: Backend | None = None,
               drive_id: str = "") -> MountInfo:
