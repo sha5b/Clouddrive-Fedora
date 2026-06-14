@@ -54,6 +54,11 @@ make flatpak flatpak-run
 Common targets: `make build`, `make test`, `make lint`, `make clean`. See
 [docs/BUILDING.md](docs/BUILDING.md) and the [Makefile](Makefile).
 
+## Continuing development
+
+Resuming in a new session? Start with **[docs/HANDOFF.md](docs/HANDOFF.md)** —
+current status, how things work, gotchas, and the next-steps backlog.
+
 ## Architecture
 
 A Libadwaita navigation-split-view shell + a module/plugin engine. Each service
