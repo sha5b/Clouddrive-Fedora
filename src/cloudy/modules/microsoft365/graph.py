@@ -164,7 +164,8 @@ class GraphClient:
     def list_messages(self, folder_id: str = "inbox", *, limit: int = 25) -> list[dict]:
         path = (
             f"/me/mailFolders/{folder_id}/messages"
-            f"?$top={limit}&$select=subject,from,receivedDateTime,bodyPreview,isRead"
+            f"?$top={limit}"
+            f"&$select=subject,from,receivedDateTime,bodyPreview,isRead,importance,flag"
             f"&$orderby=receivedDateTime desc"
         )
         data = self._get(path, SCOPES_MAIL)
@@ -180,6 +181,8 @@ class GraphClient:
                 "received": m.get("receivedDateTime", ""),
                 "preview": m.get("bodyPreview", ""),
                 "is_read": m.get("isRead", True),
+                "important": m.get("importance") == "high",
+                "starred": (m.get("flag") or {}).get("flagStatus") == "flagged",
             })
         return out
 

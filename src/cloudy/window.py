@@ -117,6 +117,7 @@ class CloudyWindow(Adw.ApplicationWindow):
         switcher = Adw.ViewSwitcher(policy=Adw.ViewSwitcherPolicy.WIDE)
         switcher.set_stack(stack)
         header.set_title_widget(switcher)
+        header.pack_end(self._account_menu_button(account))
 
         switcher_bar = Adw.ViewSwitcherBar()
         switcher_bar.set_stack(stack)
@@ -130,6 +131,58 @@ class CloudyWindow(Adw.ApplicationWindow):
         page = Adw.NavigationPage(title=account.display_name, tag=f"account:{account.id}")
         page.set_child(toolbar)
         self.content_nav.replace([page])
+
+    def _account_menu_button(self, account) -> Gtk.MenuButton:
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, margin_top=6,
+                      margin_bottom=6, margin_start=6, margin_end=6)
+        if account.signed_in:
+            resync = Gtk.Button(label=_("Sign Out / Re-sign In"))
+            resync.add_css_class("flat")
+            resync.connect("clicked", lambda *_: self._sign_out(account))
+            box.append(resync)
+        remove = Gtk.Button(label=_("Remove Account"))
+        remove.add_css_class("flat")
+        remove.add_css_class("destructive-action")
+        remove.connect("clicked", lambda *_: self._remove_account(account))
+        box.append(remove)
+
+        popover = Gtk.Popover()
+        popover.set_child(box)
+        menu = Gtk.MenuButton(icon_name="view-more-symbolic", tooltip_text=_("Account"))
+        menu.set_popover(popover)
+        return menu
+
+    def _sign_out(self, account) -> None:
+        app = self.get_application()
+        try:
+            if account.provider == "microsoft":
+                from .core.auth.msal_graph import GraphAuth
+
+                GraphAuth(app.microsoft_client_id(), app.secrets, account.id).sign_out()
+            elif account.provider == "google":
+                from .core.auth.google_oauth import GoogleAuth
+
+                GoogleAuth(
+                    app.google_client_id(), app.secrets, account.id,
+                    client_secret=app.google_client_secret(),
+                ).sign_out()
+        except Exception:  # noqa: BLE001 - clearing local token is best-effort
+            pass
+        account.signed_in = False
+        self._registry.update(account)
+        self.add_toast(_("Signed out. Sign in again to refresh permissions."))
+        self._show_account(account)
+
+    def _remove_account(self, account) -> None:
+        secrets = self.get_application().secrets
+        for kind in ("msal-cache", "google-token", "rclone-onedrive"):
+            try:
+                secrets.clear(account.id, kind)
+            except Exception:  # noqa: BLE001
+                pass
+        self._registry.remove(account.id)
+        self.content_nav.pop_to_tag("welcome")
+        self.add_toast(_("Removed %s.") % account.display_name)
 
     def _capability_placeholder(self, account, key, label) -> Gtk.Widget:
         # Signed-in surfaces get their real views.

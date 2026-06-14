@@ -97,6 +97,11 @@ class FilesView(Adw.Bin):
     def _fill(self, group, loading_row, drives, error, is_team) -> bool:
         group.remove(loading_row)
         if error:
+            if "no token" in error or "scope" in error.lower():
+                error = _(
+                    "New permission needed. Use the account menu (⋮) → "
+                    "“Sign Out / Re-sign In” to grant access."
+                )
             group.add(Adw.ActionRow(title=_("Couldn't load"), subtitle=error))
             return False
         if not drives:
