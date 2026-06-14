@@ -29,7 +29,9 @@ TOKEN_URI = "https://oauth2.googleapis.com/token"
 USERINFO = "https://openidconnect.googleapis.com/v1/userinfo"
 
 SCOPES_BASE = ["openid", "email", "profile"]
-SCOPES_MAIL = ["https://www.googleapis.com/auth/gmail.readonly"]
+# gmail.modify (read + mark read/unread + trash) so the reader can write back;
+# existing accounts must re-sign-in (⋮ → Sign Out / Re-sign In) to pick it up.
+SCOPES_MAIL = ["https://www.googleapis.com/auth/gmail.modify"]
 SCOPES_CALENDAR = ["https://www.googleapis.com/auth/calendar.readonly"]
 
 _TOKEN_KIND = "google-token"

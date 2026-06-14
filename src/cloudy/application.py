@@ -32,6 +32,10 @@ class CloudyApplication(Adw.Application):
         self.engine = PluginEngine(self.settings)
         self.cache = MemoryCache()
 
+        from .core.sync import SyncManager
+
+        self.sync_manager = SyncManager(self)
+
         self._setup_actions()
 
     # -- OAuth client ids (env override wins over GSettings) -------------
@@ -112,6 +116,9 @@ class CloudyApplication(Adw.Application):
         if not window:
             window = CloudyWindow(application=self)
         window.present()
+        if not getattr(self, "_sync_started", False):
+            self._sync_started = True
+            self.sync_manager.start()
 
     # -- Action handlers --------------------------------------------------
     def _on_quit(self, *_args):
@@ -120,7 +127,7 @@ class CloudyApplication(Adw.Application):
     def _on_preferences(self, *_args):
         from .preferences import CloudyPreferences
 
-        prefs = CloudyPreferences(engine=self.engine, settings=self.settings)
+        prefs = CloudyPreferences(engine=self.engine, settings=self.settings, app=self)
         prefs.present(self.props.active_window)
 
     def _on_add_account(self, *_args):

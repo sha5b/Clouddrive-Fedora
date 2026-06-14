@@ -53,6 +53,11 @@ def mount_root() -> Path:
     return Path(loc) if loc else _data_dir() / "mounts"
 
 
+def sync_root() -> Path:
+    """Where two-way-synced offline copies live (``…/cloudy/synced``)."""
+    return _data_dir() / "synced"
+
+
 def cache_mode() -> str:
     return _setting("cache-mode", "full") or "full"
 
@@ -127,6 +132,44 @@ class MountManager:
             "--dir-cache-time", "30s",
             "--daemon",
         ]
+
+    # -- two-way sync (rclone bisync) ------------------------------------
+    def synced_dir_for(self, name: str) -> Path:
+        return sync_root() / self._safe_name(name)
+
+    def rclone_bisync_argv(self, remote: str, localdir: Path,
+                           resync: bool = False) -> list[str]:
+        """rclone bisync argv. ``--resync`` establishes the baseline on the very
+        first run; afterwards plain bisync propagates changes both ways."""
+        argv = [
+            RCLONE.path() or RCLONE.binary, "bisync", f"{remote}:", str(localdir),
+            "--create-empty-src-dirs",
+            "--conflict-resolve", "newer",
+            "--resilient",
+        ]
+        if resync:
+            argv.append("--resync")
+        return argv
+
+    def bisync(self, remote: str, name: str, *, timeout: int = 1800) -> Path:
+        """Run a two-way sync for ``remote`` into its local folder. Resyncs once
+        to seed the baseline (tracked by a marker), then bisyncs incrementally.
+        Blocking — call off the UI thread. Returns the local directory."""
+        rc = RCLONE.path()
+        if not rc:
+            raise RuntimeError("rclone is not available")
+        localdir = self.synced_dir_for(name)
+        localdir.mkdir(parents=True, exist_ok=True)
+        marker = sync_root() / ".state" / f"{self._safe_name(name)}.resynced"
+        first = not marker.exists()
+        subprocess.run(
+            self.rclone_bisync_argv(remote, localdir, resync=first),
+            check=True, capture_output=True, text=True, timeout=timeout,
+        )
+        if first:
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text("")
+        return localdir
 
     # -- rclone OneDrive auth + remote config ----------------------------
     @staticmethod

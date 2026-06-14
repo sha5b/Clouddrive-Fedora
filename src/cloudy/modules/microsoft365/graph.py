@@ -12,6 +12,7 @@ stage 6.
 
 from __future__ import annotations
 
+import html
 import json
 import urllib.error
 import urllib.parse
@@ -61,23 +62,42 @@ class GraphClient:
             raise GraphError(f"Graph {exc.code}: {detail}") from exc
 
     def _post(self, path: str, body: dict, scopes: Sequence[str]) -> dict:
+        return self._write("POST", path, body, scopes)
+
+    def _patch(self, path: str, body: dict, scopes: Sequence[str]) -> dict:
+        return self._write("PATCH", path, body, scopes)
+
+    def _write(self, method: str, path: str, body: dict | None,
+               scopes: Sequence[str]) -> dict:
         token = self._token_provider(scopes)
         if not token:
             raise GraphError("not signed in (no token for the requested scopes)")
         url = f"{BASE_URL}{path}"
-        data = json.dumps(body).encode()
-        req = urllib.request.Request(
-            url,
-            data=data,
-            method="POST",
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json",
-            },
-        )
+        headers = {"Authorization": f"Bearer {token}"}
+        data = None
+        if body is not None:
+            data = json.dumps(body).encode()
+            headers["Content-Type"] = "application/json"
+        req = urllib.request.Request(url, data=data, method=method, headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
-                return json.loads(resp.read().decode())
+                raw = resp.read().decode()
+                return json.loads(raw) if raw else {}
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode(errors="replace")
+            raise GraphError(f"Graph {exc.code}: {detail}") from exc
+
+    def _delete(self, path: str, scopes: Sequence[str]) -> None:
+        token = self._token_provider(scopes)
+        if not token:
+            raise GraphError("not signed in (no token for the requested scopes)")
+        req = urllib.request.Request(
+            f"{BASE_URL}{path}", method="DELETE",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30):
+                return
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode(errors="replace")
             raise GraphError(f"Graph {exc.code}: {detail}") from exc
@@ -154,6 +174,20 @@ class GraphClient:
         )
 
     # -- Mail -------------------------------------------------------------
+    # Surface the everyday folders first; everything else falls in alphabetically.
+    _FOLDER_PRIORITY = {
+        "Inbox": 0, "Drafts": 1, "Sent Items": 2, "Archive": 3,
+        "Deleted Items": 4, "Junk Email": 5, "Outbox": 6,
+    }
+
+    def list_folders(self) -> list[dict]:
+        """Provider-agnostic folder list: ``[{id, name, unread}]``, inbox first."""
+        folders = self.list_mail_folders()
+        folders.sort(
+            key=lambda f: (self._FOLDER_PRIORITY.get(f["name"], 99), f["name"].lower())
+        )
+        return folders
+
     def list_mail_folders(self) -> list[dict]:
         data = self._get("/me/mailFolders?$top=50", SCOPES_MAIL)
         return [
@@ -180,10 +214,10 @@ class GraphClient:
             )
             out.append({
                 "id": m["id"],
-                "subject": m.get("subject", "(no subject)"),
-                "from": sender.get("name") or sender.get("address", ""),
+                "subject": html.unescape(m.get("subject", "(no subject)")),
+                "from": html.unescape(sender.get("name") or sender.get("address", "")),
                 "received": m.get("receivedDateTime", ""),
-                "preview": m.get("bodyPreview", ""),
+                "preview": html.unescape(m.get("bodyPreview", "")),
                 "is_read": m.get("isRead", True),
                 "important": m.get("importance") == "high",
                 "starred": (m.get("flag") or {}).get("flagStatus") == "flagged",
@@ -191,26 +225,39 @@ class GraphClient:
         return out
 
     def get_message(self, message_id: str) -> dict:
-        """Full message with a plain-text body."""
+        """Full message; ``body`` is the original HTML when available.
+
+        We deliberately do *not* ask Graph for a text body anymore — the reader
+        renders the real HTML, so we keep the formatting/links/images intact.
+        """
         data = self._get(
             f"/me/messages/{message_id}"
             f"?$select=subject,from,toRecipients,receivedDateTime,body",
             SCOPES_MAIL,
-            headers={"Prefer": 'outlook.body-content-type="text"'},
         )
         sender = (data.get("from") or {}).get("emailAddress", {})
         to = ", ".join(
             r.get("emailAddress", {}).get("address", "")
             for r in data.get("toRecipients", [])
         )
+        body = data.get("body") or {}
         return {
             "id": data.get("id", message_id),
-            "subject": data.get("subject", "(no subject)"),
-            "from": sender.get("name") or sender.get("address", ""),
-            "to": to,
+            "subject": html.unescape(data.get("subject", "(no subject)")),
+            "from": html.unescape(sender.get("name") or sender.get("address", "")),
+            "to": html.unescape(to),
             "received": data.get("receivedDateTime", ""),
-            "body": (data.get("body") or {}).get("content", ""),
+            "body": body.get("content", ""),
+            "body_html": body.get("contentType") == "html",
         }
+
+    def mark_read(self, message_id: str, read: bool = True) -> None:
+        """Set the read/unread state of a message (needs Mail.ReadWrite)."""
+        self._patch(f"/me/messages/{message_id}", {"isRead": read}, SCOPES_MAIL)
+
+    def delete_message(self, message_id: str) -> None:
+        """Move a message to Deleted Items (Graph DELETE is recoverable)."""
+        self._delete(f"/me/messages/{message_id}", SCOPES_MAIL)
 
     # -- Calendar ---------------------------------------------------------
     def list_calendars(self) -> list[dict]:

@@ -35,6 +35,10 @@ class CloudyWindow(Adw.ApplicationWindow):
         self._registry = app.registry
         self._engine = app.engine
 
+        self._account_stack = None
+        self._account_mail_view = None
+        self._account_shown = None
+
         self._bind_window_state()
         self.sidebar_list.connect("row-selected", self._on_row_selected)
         self._registry.connect("changed", lambda *_: self._refresh_sidebar())
@@ -108,11 +112,18 @@ class CloudyWindow(Adw.ApplicationWindow):
         caps = capabilities_of(module) if module else []
 
         stack = Adw.ViewStack()
+        self._account_stack = stack
+        self._account_mail_view = None
+        self._account_shown = account.id
         for key in caps:
             label, icon = CAPABILITY_UI.get(key, (key, "application-x-addon-symbolic"))
-            page = stack.add_titled(
-                self._capability_placeholder(account, key, label), key, label
-            )
+            child = self._capability_placeholder(account, key, label)
+            if key == "mail":
+                from .widgets.mail_view import MailView
+
+                if isinstance(child, MailView):
+                    self._account_mail_view = child
+            page = stack.add_titled(child, key, label)
             page.set_icon_name(icon)
 
         header = Adw.HeaderBar()
@@ -124,13 +135,8 @@ class CloudyWindow(Adw.ApplicationWindow):
         refresh.connect("clicked", lambda *_: self._refresh_account(account))
         header.pack_end(refresh)
 
-        switcher_bar = Adw.ViewSwitcherBar()
-        switcher_bar.set_stack(stack)
-        switcher_bar.set_reveal(True)
-
         toolbar = Adw.ToolbarView()
         toolbar.add_top_bar(header)
-        toolbar.add_bottom_bar(switcher_bar)
         toolbar.set_content(stack)
 
         page = Adw.NavigationPage(title=account.display_name, tag=f"account:{account.id}")
@@ -140,6 +146,28 @@ class CloudyWindow(Adw.ApplicationWindow):
     def _refresh_account(self, account) -> None:
         self.get_application().cache.invalidate(prefix=account.id)
         self._show_account(account)
+
+    # -- deep links (e.g. from the dashboard) -----------------------------
+    def open_mail(self, account, message_id) -> None:
+        """Show the account's Mail tab and open a specific message there."""
+        self._select_sidebar_account(account.id)  # builds the account view
+        if self._account_shown != account.id:
+            return
+        if self._account_stack is not None:
+            self._account_stack.set_visible_child_name("mail")
+        if self._account_mail_view is not None:
+            self._account_mail_view.open_message(message_id)
+
+    def _select_sidebar_account(self, account_id) -> None:
+        row = self.sidebar_list.get_first_child()
+        while row is not None:
+            if getattr(row, "_account_id", None) == account_id:
+                if self.sidebar_list.get_selected_row() is row:
+                    self._show_account(self._registry.get(account_id))
+                else:
+                    self.sidebar_list.select_row(row)  # emits row-selected
+                return
+            row = row.get_next_sibling()
 
     def _account_menu_button(self, account) -> Gtk.MenuButton:
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, margin_top=6,

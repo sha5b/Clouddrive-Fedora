@@ -23,6 +23,7 @@ class Account:
     provider: str  # "microsoft" | "google"
     module_id: str  # which module owns it, e.g. "microsoft365"
     signed_in: bool = False  # flipped true once auth completes (stage 2)
+    full_sync: bool = False  # keep a two-way (bisync) offline copy on disk
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -35,6 +36,7 @@ class Account:
             provider=data["provider"],
             module_id=data["module_id"],
             signed_in=data.get("signed_in", False),
+            full_sync=data.get("full_sync", False),
         )
 
 

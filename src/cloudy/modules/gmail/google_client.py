@@ -15,6 +15,7 @@ core.auth.google_oauth).
 from __future__ import annotations
 
 import base64
+import html
 import json
 import urllib.error
 import urllib.parse
@@ -40,25 +41,32 @@ def _decode_b64url(data: str) -> str:
         return ""
 
 
-def _extract_body(payload: dict) -> str:
-    """Walk a Gmail payload, preferring text/plain, then text/html."""
+def _extract_rich(payload: dict) -> tuple[str, bool]:
+    """Walk a Gmail payload, preferring text/html. Returns (content, is_html).
+
+    The reader renders HTML, so we surface the richest body we can find and
+    fall back to text/plain only when there's no HTML alternative.
+    """
     mime = payload.get("mimeType", "")
-    body_data = payload.get("body", {}).get("data")
-    if mime == "text/plain" and body_data:
-        return _decode_b64url(body_data)
-    # Recurse into parts; collect a plain-text candidate, fall back to html.
-    html = ""
+    data = payload.get("body", {}).get("data")
+    if mime == "text/html" and data:
+        return _decode_b64url(data), True
+    if mime == "text/plain" and data:
+        return _decode_b64url(data), False
+
+    html_part = ""
+    text_part = ""
     for part in payload.get("parts", []):
-        text = _extract_body(part)
-        if part.get("mimeType") == "text/plain" and text:
-            return text
-        if part.get("mimeType") == "text/html" and text and not html:
-            html = text
-        elif text and not html:
-            html = text
-    if mime == "text/html" and body_data:
-        return _decode_b64url(body_data)
-    return html
+        content, is_html = _extract_rich(part)
+        if not content:
+            continue
+        if is_html and not html_part:
+            html_part = content
+        elif not is_html and not text_part:
+            text_part = content
+    if html_part:
+        return html_part, True
+    return text_part, False
 
 
 class GoogleClient:
@@ -76,7 +84,51 @@ class GoogleClient:
         except urllib.error.HTTPError as exc:
             raise GoogleError(f"Google {exc.code}: {exc.read().decode(errors='replace')}") from exc
 
+    def _post(self, url: str, body: dict | None, scopes: Sequence[str]) -> dict:
+        token = self._token_provider(scopes)
+        if not token:
+            raise GoogleError("not signed in (no token for the requested scopes)")
+        data = json.dumps(body).encode() if body is not None else b""
+        req = urllib.request.Request(
+            url, data=data, method="POST",
+            headers={"Authorization": f"Bearer {token}",
+                     "Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                raw = resp.read().decode()
+                return json.loads(raw) if raw else {}
+        except urllib.error.HTTPError as exc:
+            raise GoogleError(f"Google {exc.code}: {exc.read().decode(errors='replace')}") from exc
+
     # -- Mail (Gmail) -----------------------------------------------------
+    # Friendly names + display order for Gmail's system labels; user-created
+    # labels follow, alphabetically.
+    _SYSTEM_LABELS = [
+        ("INBOX", "Inbox"), ("STARRED", "Starred"), ("IMPORTANT", "Important"),
+        ("SENT", "Sent"), ("DRAFT", "Drafts"), ("SPAM", "Spam"), ("TRASH", "Trash"),
+    ]
+
+    def list_folders(self) -> list[dict]:
+        """Provider-agnostic folder list: ``[{id, name, unread}]`` (Gmail labels).
+
+        Gmail's ``labels.list`` carries no unread counts, so ``unread`` is 0;
+        the curated system labels lead, then user labels alphabetically.
+        """
+        data = self._get(f"{GMAIL}/users/me/labels", SCOPES_MAIL)
+        by_id = {lab["id"]: lab for lab in data.get("labels", [])}
+        out = []
+        for lid, name in self._SYSTEM_LABELS:
+            if lid in by_id:
+                out.append({"id": lid, "name": name, "unread": 0})
+        user = sorted(
+            (lab for lab in data.get("labels", []) if lab.get("type") == "user"),
+            key=lambda lab: lab.get("name", "").lower(),
+        )
+        for lab in user:
+            out.append({"id": lab["id"], "name": lab.get("name", ""), "unread": 0})
+        return out
+
     def list_messages(self, folder_id: str = "INBOX", *, limit: int = 15) -> list[dict]:
         listing = self._get(
             f"{GMAIL}/users/me/messages?labelIds={folder_id}&maxResults={limit}",
@@ -105,12 +157,14 @@ class GoogleClient:
                 int(internal) / 1000, tz=timezone.utc
             ).strftime("%Y-%m-%dT%H:%M:%SZ")
         labels = msg.get("labelIds", [])
+        # Gmail's snippet (and occasionally header values) are HTML-escaped
+        # ('&amp;', '&#39;', …); decode so plain Gtk.Labels read naturally.
         return {
             "id": msg.get("id", ""),
-            "subject": headers.get("subject", "(no subject)"),
-            "from": headers.get("from", ""),
+            "subject": html.unescape(headers.get("subject", "(no subject)")),
+            "from": html.unescape(headers.get("from", "")),
             "received": received,
-            "preview": msg.get("snippet", ""),
+            "preview": html.unescape(msg.get("snippet", "")),
             "is_read": "UNREAD" not in labels,
             "important": "IMPORTANT" in labels,
             "starred": "STARRED" in labels,
@@ -125,14 +179,27 @@ class GoogleClient:
             received = datetime.fromtimestamp(
                 int(data["internalDate"]) / 1000, tz=timezone.utc
             ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        content, is_html = _extract_rich(payload)
+        if not content:
+            content, is_html = html.unescape(data.get("snippet", "")), False
         return {
             "id": data.get("id", message_id),
-            "subject": headers.get("subject", "(no subject)"),
-            "from": headers.get("from", ""),
-            "to": headers.get("to", ""),
+            "subject": html.unescape(headers.get("subject", "(no subject)")),
+            "from": html.unescape(headers.get("from", "")),
+            "to": html.unescape(headers.get("to", "")),
             "received": received,
-            "body": _extract_body(payload) or data.get("snippet", ""),
+            "body": content,
+            "body_html": is_html,
         }
+
+    def mark_read(self, message_id: str, read: bool = True) -> None:
+        """Mark a message read/unread by toggling the UNREAD label (gmail.modify)."""
+        body = {"removeLabelIds": ["UNREAD"]} if read else {"addLabelIds": ["UNREAD"]}
+        self._post(f"{GMAIL}/users/me/messages/{message_id}/modify", body, SCOPES_MAIL)
+
+    def delete_message(self, message_id: str) -> None:
+        """Move a message to Trash (recoverable; needs gmail.modify)."""
+        self._post(f"{GMAIL}/users/me/messages/{message_id}/trash", None, SCOPES_MAIL)
 
     # -- Calendar ---------------------------------------------------------
     def list_events(self, start_iso: str, end_iso: str, *, limit: int = 50) -> list[dict]:

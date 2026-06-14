@@ -135,6 +135,13 @@ class DashboardView(Adw.Bin):
             row.add_prefix(dot)
         else:
             row.add_prefix(Gtk.Image.new_from_icon_name("mail-read-symbolic"))
+        # Click → jump to this message in the account's Mail view.
+        row.set_activatable(True)
+        row.add_suffix(Gtk.Image.new_from_icon_name("go-next-symbolic"))
+        row.connect(
+            "activated",
+            lambda _r, a=account, mid=msg.get("id"): self._window.open_mail(a, mid),
+        )
         return row
 
 

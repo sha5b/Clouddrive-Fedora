@@ -11,11 +11,12 @@ from gi.repository import Adw, Gio, GLib, Gtk
 class CloudyPreferences(Adw.PreferencesDialog):
     __gtype_name__ = "CloudyPreferences"
 
-    def __init__(self, engine, settings: Gio.Settings, **kwargs):
+    def __init__(self, engine, settings: Gio.Settings, app=None, **kwargs):
         super().__init__(**kwargs)
         self.set_title(_("Preferences"))
         self._engine = engine
         self._settings = settings
+        self._app = app
 
         self.add(self._general_page())
         self.add(self._modules_page())
@@ -50,6 +51,8 @@ class CloudyPreferences(Adw.PreferencesDialog):
         cache.connect("notify::selected", self._on_cache_changed)
         files.add(cache)
 
+        page.add(self._sync_group())
+
         startup = Adw.PreferencesGroup(title=_("Startup"))
         page.add(startup)
         autostart = Adw.SwitchRow(
@@ -61,6 +64,47 @@ class CloudyPreferences(Adw.PreferencesDialog):
         startup.add(autostart)
 
         return page
+
+    # -- per-account offline sync ----------------------------------------
+    def _sync_group(self) -> Adw.PreferencesGroup:
+        group = Adw.PreferencesGroup(
+            title=_("Offline sync"),
+            description=_(
+                "Keep a two-way synced copy of an account's libraries on this "
+                "computer (under ~/.local/share/cloudy/synced). Local edits "
+                "upload and cloud changes download automatically."
+            ),
+        )
+        registry = getattr(self._app, "registry", None)
+        accounts = [a for a in registry.accounts() if a.signed_in] if registry else []
+        if not accounts:
+            group.add(Adw.ActionRow(
+                title=_("No signed-in accounts"),
+                subtitle=_("Sign in to an account to enable offline sync."),
+            ))
+            return group
+        for account in accounts:
+            row = Adw.SwitchRow(
+                title=account.display_name,
+                subtitle=_("Keep a two-way synced offline copy"),
+            )
+            row.set_active(getattr(account, "full_sync", False))
+            row.connect("notify::active", self._on_sync_toggled, account)
+            group.add(row)
+        return group
+
+    def _on_sync_toggled(self, row, _param, account) -> None:
+        enabled = row.get_active()
+        account.full_sync = enabled
+        if getattr(self._app, "registry", None) is not None:
+            self._app.registry.update(account)
+        manager = getattr(self._app, "sync_manager", None)
+        if manager is None:
+            return
+        if enabled:
+            manager.enable(account)
+        else:
+            manager.disable(account)
 
     def _mount_location_display(self) -> str:
         loc = self._settings.get_string("mount-location")
