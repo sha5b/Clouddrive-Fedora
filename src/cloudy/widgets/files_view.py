@@ -12,7 +12,7 @@ from __future__ import annotations
 import threading
 from gettext import gettext as _
 
-from gi.repository import Adw, Gio, GLib, Gtk
+from gi.repository import Adw, GLib, Gtk
 
 from ..modules.microsoft365.mounts import MountManager
 
@@ -49,6 +49,8 @@ class FilesView(Adw.Bin):
         self._teams_loading = Adw.ActionRow(title=_("Loading Teams…"))
         self._teams_group.add(self._teams_loading)
 
+        # name -> (row, action_button, base_subtitle) so we can flip Mount/Unmount.
+        self._rows: dict = {}
         self._load_async()
 
     # -- backend status ---------------------------------------------------
@@ -115,20 +117,38 @@ class FilesView(Adw.Bin):
     def _drive_row(self, drive, is_team) -> Adw.ActionRow:
         from .format import esc
 
-        subtitle = _("Team library") if is_team else drive.kind
-        row = Adw.ActionRow(title=esc(drive.name), subtitle=esc(subtitle))
+        base_subtitle = _("Team library") if is_team else drive.kind
+        row = Adw.ActionRow(title=esc(drive.name))
         icon = "system-users-symbolic" if is_team else "folder-remote-symbolic"
         row.add_prefix(Gtk.Image.new_from_icon_name(icon))
+        self._rows[drive.name] = [row, None, base_subtitle]
+        self._apply_button(drive)
+        return row
 
-        if self._mounts.is_mounted(self._mounts.mountpoint_for(drive.name)):
-            button = Gtk.Button(label=_("Open"), valign=Gtk.Align.CENTER)
-            button.connect("clicked", lambda *_: self._open(drive))
+    def _apply_button(self, drive) -> None:
+        """Set the row's button/subtitle to reflect mounted state."""
+        from .format import esc
+
+        entry = self._rows.get(drive.name)
+        if entry is None:
+            return
+        row, old_button, base_subtitle = entry
+        if old_button is not None:
+            row.remove(old_button)
+
+        mounted = self._mounts.is_mounted(self._mounts.mountpoint_for(drive.name))
+        if mounted:
+            row.set_subtitle(esc(_("Mounted · in the Files sidebar")))
+            button = Gtk.Button(label=_("Unmount"), valign=Gtk.Align.CENTER)
+            button.add_css_class("flat")
+            button.connect("clicked", lambda *_: self._unmount(drive))
         else:
+            row.set_subtitle(esc(base_subtitle))
             button = Gtk.Button(label=_("Mount"), valign=Gtk.Align.CENTER)
             button.add_css_class("suggested-action")
             button.connect("clicked", lambda *_: self._mount(drive))
         row.add_suffix(button)
-        return row
+        entry[1] = button
 
     # -- actions ----------------------------------------------------------
     def _mount(self, drive) -> None:
@@ -163,6 +183,7 @@ class FilesView(Adw.Bin):
         if error:
             self._window.add_toast(_("Mount failed: %s") % error)
             return False
+        self._apply_button(drive)  # flip the button to "Unmount"
         self._window.add_toast(
             _("%s is now in your Files sidebar.") % drive.name
             if info and info.active
@@ -170,6 +191,20 @@ class FilesView(Adw.Bin):
         )
         return False
 
-    def _open(self, drive) -> None:
-        uri = self._mounts.mountpoint_for(drive.name).as_uri()
-        Gio.AppInfo.launch_default_for_uri(uri, None)
+    def _unmount(self, drive) -> None:
+        def worker():
+            try:
+                self._mounts.unmount(self._mounts.mountpoint_for(drive.name))
+                GLib.idle_add(self._on_unmounted, drive, None)
+            except Exception as exc:  # noqa: BLE001
+                GLib.idle_add(self._on_unmounted, drive, str(exc))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_unmounted(self, drive, error) -> bool:
+        if error:
+            self._window.add_toast(_("Unmount failed: %s") % error)
+            return False
+        self._apply_button(drive)  # flip the button back to "Mount"
+        self._window.add_toast(_("Unmounted %s.") % drive.name)
+        return False
