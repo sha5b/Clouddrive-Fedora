@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# SPDX-FileCopyrightText: 2026 Fiber Elements
+# SPDX-FileCopyrightText: 2026 Shahab Nedaei
 """Add-account dialog: pick a provider discovered by the plugin engine.
 
 The provider list is built from the modules (one provider = one account = one

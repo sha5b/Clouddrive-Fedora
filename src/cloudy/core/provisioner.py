@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# SPDX-FileCopyrightText: 2026 Fiber Elements
+# SPDX-FileCopyrightText: 2026 Shahab Nedaei
 """Self-provisioning of host backends the app needs (rootless).
 
 Cloudy should "just work" without the user installing anything. For the

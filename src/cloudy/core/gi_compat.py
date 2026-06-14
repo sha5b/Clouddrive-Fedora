@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# SPDX-FileCopyrightText: 2026 Fiber Elements
+# SPDX-FileCopyrightText: 2026 Shahab Nedaei
 """Version-tolerant GObject-Introspection imports.
 
 Optional integrations (WebKit, Evolution Data Server, the desktop portal) live

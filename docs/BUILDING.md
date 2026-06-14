@@ -1,6 +1,6 @@
 <!--
 SPDX-License-Identifier: GPL-3.0-or-later
-SPDX-FileCopyrightText: 2026 Fiber Elements
+SPDX-FileCopyrightText: 2026 Shahab Nedaei
 -->
 
 # Building Cloudy
@@ -21,7 +21,7 @@ make flatpak flatpak-run
 ```
 
 Pinned for reproducibility: GNOME runtime/SDK **50**, `blueprint-compiler`
-**v0.16.0** (both in `com.fiberelements.Cloudy.yml` and
+**v0.16.0** (both in `io.github.sha5b.Clouddrive.yml` and
 `subprojects/blueprint-compiler.wrap`).
 
 The manual steps follow.
@@ -55,12 +55,12 @@ flatpak install --user \
 
 # Build + install into the user installation
 flatpak-builder --user --install --force-clean \
-    _build/flatpak com.fiberelements.Cloudy.yml
+    _build/flatpak io.github.sha5b.Clouddrive.yml
 
-flatpak run com.fiberelements.Cloudy
+flatpak run io.github.sha5b.Clouddrive
 ```
 
-GNOME Builder: *Open Project* → it detects `com.fiberelements.Cloudy.yml`
+GNOME Builder: *Open Project* → it detects `io.github.sha5b.Clouddrive.yml`
 and the Run button builds & launches the Flatpak.
 
 ## Option B — Meson into a prefix (fast iteration)
@@ -83,6 +83,66 @@ GSETTINGS_SCHEMA_DIR="$PWD/_install/share/glib-2.0/schemas" \
 
 If `blueprint-compiler` is not packaged for your system, the Meson build pulls
 it as a subproject via `subprojects/blueprint-compiler.wrap`.
+
+## Option C — RPM (Fedora)
+
+A meson-based, `noarch` spec lives at [`packaging/cloudy.spec`](../packaging/cloudy.spec).
+The `make rpm` target builds a reproducible source tarball (secrets and build
+cruft excluded) into a self-contained `_build/rpm/` tree — no `~/rpmbuild`, no
+root:
+
+```bash
+make rpm        # -> _build/rpm/RPMS/noarch/cloudy-<ver>.noarch.rpm  (+ SRPMS)
+make srpm       # source RPM only
+
+sudo dnf install ./_build/rpm/RPMS/noarch/cloudy-*.noarch.rpm
+```
+
+On a real Fedora build host (with `meson`, `blueprint-compiler` and the other
+`BuildRequires` installed) the spec also builds the canonical way:
+`rpmbuild -ba packaging/cloudy.spec` after dropping the tarball in `SOURCES/`.
+`make rpm` uses `--nodeps` + the in-tree `blueprint-compiler` subproject so it
+works on a dev box where those build deps aren't root-installed.
+
+## Credentials — how shipped builds "just work"
+
+The committed source ships **zero** credentials: the GSettings schema defaults
+are empty and there is no `.env` in git. A **release** build bakes OAuth client
+IDs in at build time via meson options, which generate a GSettings *vendor
+override* (`90_<app-id>.gschema.override`) — the schema source is never touched:
+
+```bash
+meson setup _build \
+  -Dms_client_id=...  -Dgoogle_client_id=...  -Dgoogle_client_secret=...
+```
+
+`make rpm` and `make flatpak` read these from `.env` automatically (and never
+write them into the committed spec/manifest — the Flatpak uses a generated
+local manifest under `_build/`). A build with no options ships no credentials
+and sign-in then needs per-user `CLOUDY_*` env / GSettings (see
+[SECRETS.md](SECRETS.md)).
+
+> ⚠️ Baked credentials are **extractable** from the installed artifact — this is
+> unavoidable for any desktop app. It is acceptable only for OAuth *public/
+> desktop* clients (Microsoft public client = no secret; Google "Desktop app"
+> secret = non-confidential by Google's design, protected by PKCE). Never bake a
+> confidential web-client secret. Rotate the Google secret before public release
+> and move its OAuth consent screen to *Production*.
+
+## Uninstall
+
+Removing the package drops every *packaged* file; live FUSE mounts and per-user
+data (tokens, settings, caches, the host Nautilus extension) are handled by
+[`scripts/uninstall-cloudy.sh`](../scripts/uninstall-cloudy.sh):
+
+```bash
+scripts/uninstall-cloudy.sh           # unmount mounts + print removal steps
+scripts/uninstall-cloudy.sh --purge   # ALSO delete tokens, settings, caches
+
+# then remove the package itself:
+sudo dnf remove cloudy                              # RPM
+flatpak uninstall --user io.github.sha5b.Clouddrive # Flatpak (--delete-data too)
+```
 
 ## Host backends (runtime dependencies, not build deps)
 

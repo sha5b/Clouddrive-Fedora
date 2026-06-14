@@ -1,7 +1,7 @@
 # List of source files containing translatable strings.
 # Paths are relative to the project root.
-data/com.fiberelements.Cloudy.desktop.in
-data/com.fiberelements.Cloudy.metainfo.xml.in
+data/io.github.sha5b.Clouddrive.desktop.in
+data/io.github.sha5b.Clouddrive.metainfo.xml.in
 data/ui/window.blp
 data/ui/preferences.blp
 src/cloudy/application.py

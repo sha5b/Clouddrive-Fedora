@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# SPDX-FileCopyrightText: 2026 Fiber Elements
+# SPDX-FileCopyrightText: 2026 Shahab Nedaei
 """Microsoft Graph REST client shared by all Microsoft 365 capabilities.
 
 A single instance serves Files (drive/site enumeration, share links), Mail, and
@@ -34,6 +34,16 @@ BASE_URL = "https://graph.microsoft.com/v1.0"
 
 class GraphError(Exception):
     pass
+
+
+def _split_id(value: str, count: int) -> list[str]:
+    """Split a prefixed source/message ID (``shared:addr:id`` / ``group:id:id``)
+    into exactly ``count`` parts, or raise rather than ``ValueError``-crash on a
+    malformed/truncated ID coming back from the UI."""
+    parts = value.split(":", count - 1)
+    if len(parts) != count:
+        raise GraphError(f"malformed ID: {value!r}")
+    return parts
 
 
 @dataclass
@@ -255,7 +265,7 @@ class GraphClient:
         if folder_id.startswith("group:"):
             return self._list_group_threads(folder_id.split(":", 1)[1], limit)
         if folder_id.startswith("shared:"):
-            _, address, fid = folder_id.split(":", 2)
+            _, address, fid = _split_id(folder_id, 3)
             return self._list_folder_messages(f"/users/{address}", fid, limit,
                                               id_prefix=f"shared:{address}:",
                                               scopes=SCOPES_MAIL_SHARED)
@@ -316,7 +326,7 @@ class GraphClient:
 
     def _get_group_thread(self, message_id: str) -> dict:
         """Render a whole group conversation thread (all posts) as one message."""
-        _, group_id, thread_id = message_id.split(":", 2)
+        _, group_id, thread_id = _split_id(message_id, 3)
         data = self._get(
             f"/groups/{group_id}/threads/{thread_id}?$expand=posts", SCOPES_GROUPS
         )
@@ -378,7 +388,7 @@ class GraphClient:
     def _message_scope(message_id: str):
         """Return (api base, raw message id, scopes) for a personal/shared message."""
         if message_id.startswith("shared:"):
-            _, address, raw_id = message_id.split(":", 2)
+            _, address, raw_id = _split_id(message_id, 3)
             return f"/users/{address}", raw_id, SCOPES_MAIL_SHARED
         return "/me", message_id, SCOPES_MAIL
 
@@ -431,7 +441,7 @@ class GraphClient:
         group conversation thread is answered with a new post on the thread."""
         comment = {"contentType": "HTML" if html else "Text", "content": body}
         if message_id.startswith("group:"):
-            _, gid, tid = message_id.split(":", 2)
+            _, gid, tid = _split_id(message_id, 3)
             self._post(f"/groups/{gid}/threads/{tid}/reply",
                        {"post": {"body": comment}}, SCOPES_GROUPS)
             return
@@ -511,11 +521,11 @@ class GraphClient:
         select = ("subject,start,end,location,body,organizer,attendees,"
                   "isAllDay,isOnlineMeeting,onlineMeeting,webLink,responseStatus")
         if event_id.startswith("group:"):
-            _, gid, eid = event_id.split(":", 2)
+            _, gid, eid = _split_id(event_id, 3)
             data = self._get(f"/groups/{gid}/events/{eid}?$select={select}", SCOPES_GROUPS)
             can_respond = False
         elif event_id.startswith("shared:"):
-            _, address, eid = event_id.split(":", 2)
+            _, address, eid = _split_id(event_id, 3)
             data = self._get(f"/users/{address}/events/{eid}?$select={select}",
                              SCOPES_MAIL_SHARED)
             can_respond = False  # delegated RSVP isn't offered from here
@@ -596,7 +606,7 @@ class GraphClient:
         if event_id.startswith("group:"):
             raise GraphError("Group events can't be deleted from here.")
         if event_id.startswith("shared:"):
-            _, address, eid = event_id.split(":", 2)
+            _, address, eid = _split_id(event_id, 3)
             self._delete(f"/users/{address}/events/{eid}", SCOPES_MAIL_SHARED)
             return
         self._delete(f"/me/events/{event_id}", SCOPES_MAIL)

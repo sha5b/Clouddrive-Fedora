@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# SPDX-FileCopyrightText: 2026 Fiber Elements
+# SPDX-FileCopyrightText: 2026 Shahab Nedaei
 """The main application window, loaded from the Blueprint-compiled template."""
 
 import threading
@@ -9,7 +9,7 @@ from gi.repository import Adw, Gio, GLib, Gtk
 
 from .core.interfaces import capabilities_of
 
-RESOURCE_PREFIX = "/com/fiberelements/Cloudy"
+RESOURCE_PREFIX = "/io/github/sha5b/Clouddrive"
 
 # Capability key -> (translated label, symbolic icon).
 CAPABILITY_UI = {

@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
 SPDX-License-Identifier: GPL-3.0-or-later
-SPDX-FileCopyrightText: 2026 Fiber Elements
+SPDX-FileCopyrightText: 2026 Shahab Nedaei
 -->
 <gresources>
-  <gresource prefix="/com/fiberelements/Cloudy">
+  <gresource prefix="/io/github/sha5b/Clouddrive">
     <file preprocess="xml-stripblanks">ui/window.ui</file>
     <file preprocess="xml-stripblanks">ui/preferences.ui</file>
   </gresource>

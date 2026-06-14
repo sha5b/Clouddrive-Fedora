@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# SPDX-FileCopyrightText: 2026 Fiber Elements
+# SPDX-FileCopyrightText: 2026 Shahab Nedaei
 """Shared base for editor surfaces (compose, new event, …).
 
 The convention for Cloudy: anything you *edit and submit* opens as a **non-modal

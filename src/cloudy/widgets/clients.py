@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# SPDX-FileCopyrightText: 2026 Fiber Elements
+# SPDX-FileCopyrightText: 2026 Shahab Nedaei
 """Provider-agnostic client factory for the Mail/Calendar views.
 
 Returns a client exposing ``list_messages()`` and ``list_events(start, end)``

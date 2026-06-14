@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# SPDX-FileCopyrightText: 2026 Fiber Elements
+# SPDX-FileCopyrightText: 2026 Shahab Nedaei
 """Compose / reply editor for the Mail surface.
 
 A **non-modal window** (see ``editor_window.EditorWindow``) so you can copy from

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
-# SPDX-FileCopyrightText: 2026 Fiber Elements
+# SPDX-FileCopyrightText: 2026 Shahab Nedaei
 #
 # Reproducible one-shot setup for Cloudy development on Fedora 44 (GNOME 50).
 # Installs the build toolchain, the runtime libraries, and (optionally) the host

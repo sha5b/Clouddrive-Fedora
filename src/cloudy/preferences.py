@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# SPDX-FileCopyrightText: 2026 Fiber Elements
+# SPDX-FileCopyrightText: 2026 Shahab Nedaei
 """Preferences, split cleanly in two:
 
 * **General** — app-wide file setup: where libraries mount, the mount layout
@@ -343,7 +343,7 @@ class CloudyPreferences(Adw.PreferencesDialog):
 
 def _write_autostart(enabled: bool) -> None:
     """Create/remove a host autostart .desktop entry (rootless)."""
-    path = Path(GLib.get_user_config_dir()) / "autostart" / "com.fiberelements.Cloudy.desktop"
+    path = Path(GLib.get_user_config_dir()) / "autostart" / "io.github.sha5b.Clouddrive.desktop"
     if enabled:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(

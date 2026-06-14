@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# SPDX-FileCopyrightText: 2026 Fiber Elements
+# SPDX-FileCopyrightText: 2026 Shahab Nedaei
 """New-event editor for the Calendar surface.
 
 A **non-modal window** (``editor_window.EditorWindow``) — same convention as
@@ -11,7 +11,7 @@ off-thread. Also exposes :func:`parse_ics` for opening ``.ics`` invitations.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from gettext import gettext as _
 
 from gi.repository import Adw, GLib, Gtk
@@ -154,8 +154,18 @@ class EventWindow(EditorWindow):
             if end <= start:
                 end = start + timedelta(hours=1)
 
+        # The calendar/time fields give a naive *local* wall-clock pick, but the
+        # clients send the ISO slot as UTC (Graph strips the Z + timeZone=UTC;
+        # Google honours the Z). Convert local→UTC so the event lands at the time
+        # the user chose. All-day stays on its picked date — shifting midnight
+        # across the UTC boundary would move it to the wrong day.
+        local_tz = datetime.now().astimezone().tzinfo
+
         def iso(dt: datetime) -> str:
-            return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+            if all_day:
+                return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+            return (dt.replace(tzinfo=local_tz).astimezone(timezone.utc)
+                    .strftime("%Y-%m-%dT%H:%M:%SZ"))
 
         attendees = [a.strip() for a in self._attendees.get_text().split(",")
                      if a.strip()]

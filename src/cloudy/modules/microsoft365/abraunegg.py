@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# SPDX-FileCopyrightText: 2026 Fiber Elements
+# SPDX-FileCopyrightText: 2026 Shahab Nedaei
 """Thin wrapper around the host ``onedrive`` (abraunegg) binary.
 
 Responsibilities (stages 3+):

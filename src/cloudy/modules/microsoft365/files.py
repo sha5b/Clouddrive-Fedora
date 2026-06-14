@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# SPDX-FileCopyrightText: 2026 Fiber Elements
+# SPDX-FileCopyrightText: 2026 Shahab Nedaei
 """OneDrive / SharePoint files — the Files capability of Microsoft 365.
 
 Orchestration only: drive/site enumeration goes through the shared Graph client;

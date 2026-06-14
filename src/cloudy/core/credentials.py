@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# SPDX-FileCopyrightText: 2026 Fiber Elements
+# SPDX-FileCopyrightText: 2026 Shahab Nedaei
 """Load OAuth credentials from dotenv files, never from committed source.
 
 On startup we populate ``CLOUDY_*`` env vars from the first file that defines

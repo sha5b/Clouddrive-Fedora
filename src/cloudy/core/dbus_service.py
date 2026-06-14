@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# SPDX-FileCopyrightText: 2026 Fiber Elements
+# SPDX-FileCopyrightText: 2026 Shahab Nedaei
 """D-Bus status service consumed by the host Nautilus extension.
 
 The app publishes per-path sync status (and accepts commands like
@@ -21,13 +21,13 @@ from typing import Callable, Optional
 
 from gi.repository import Gio, GLib
 
-BUS_NAME = "com.fiberelements.Cloudy"
-OBJECT_PATH = "/com/fiberelements/Cloudy/Sync"
-INTERFACE = "com.fiberelements.Cloudy.Sync"
+BUS_NAME = "io.github.sha5b.Clouddrive"
+OBJECT_PATH = "/io/github/sha5b/Clouddrive/Sync"
+INTERFACE = "io.github.sha5b.Clouddrive.Sync"
 
 INTROSPECTION_XML = """
 <node>
-  <interface name="com.fiberelements.Cloudy.Sync">
+  <interface name="io.github.sha5b.Clouddrive.Sync">
     <method name="StatusForPath">
       <arg type="s" name="path" direction="in"/>
       <arg type="s" name="status" direction="out"/>

@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Shahab Nedaei
+#
+# Build-time OAuth credential injection. ALL default to empty so the committed
+# source and a plain `make build` ship NO credentials. A release build passes
+# the values (from .env / a CI secret store), which generates a GSettings vendor
+# override file that fills the otherwise-empty schema defaults. The schema
+# source itself never carries a credential. See docs/SECRETS.md.
+#
+# NOTE: these end up in the installed artifact as plaintext (a GSettings
+# override). That is unavoidable for a desktop app and is acceptable ONLY for
+# OAuth *public/desktop* clients (no truly-confidential secret). Never put a
+# confidential web-client secret here.
+
+option('ms_client_id', type: 'string', value: '',
+  description: 'Microsoft Entra public client ID baked into the build')
+option('google_client_id', type: 'string', value: '',
+  description: 'Google Desktop OAuth client ID baked into the build')
+option('google_client_secret', type: 'string', value: '',
+  description: 'Google Desktop OAuth client secret (non-confidential) baked into the build')

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# SPDX-FileCopyrightText: 2026 Fiber Elements
+# SPDX-FileCopyrightText: 2026 Shahab Nedaei
 
 project('cloudy', 'c',
           version: '0.1.0',
@@ -12,7 +12,7 @@ gnome = import('gnome')
 
 # Reverse-DNS application id used across the .desktop, metainfo, gschema,
 # GResource and D-Bus surfaces. Change this single value to rebrand.
-application_id = 'com.fiberelements.Cloudy'
+application_id = 'io.github.sha5b.Clouddrive'
 
 # Make the values available to configured files (launcher, desktop, etc.).
 prefix     = get_option('prefix')

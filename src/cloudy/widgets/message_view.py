@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# SPDX-FileCopyrightText: 2026 Fiber Elements
+# SPDX-FileCopyrightText: 2026 Shahab Nedaei
 """Read view for a single mail message.
 
 The body is rendered as real HTML in a sandboxed ``WebKit.WebView`` (JavaScript

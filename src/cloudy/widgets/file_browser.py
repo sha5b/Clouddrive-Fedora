@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# SPDX-FileCopyrightText: 2026 Fiber Elements
+# SPDX-FileCopyrightText: 2026 Shahab Nedaei
 """In-app, Nautilus-style file browser for a mounted library.
 
 A mounted library is a real folder on disk (its FUSE mountpoint), so browsing is
@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import time
 from datetime import datetime
 from gettext import gettext as _
 from pathlib import Path
@@ -24,11 +25,20 @@ from gi.repository import Adw, Gio, GLib, Gtk, Pango
 from .source_nav import run_async
 
 
-def recent_changes(roots: list[Path], *, limit: int = 8, max_scan: int = 3000) -> list[dict]:
-    """Most-recently-modified files under ``roots`` (for the Dashboard)."""
+def recent_changes(roots: list[Path], *, limit: int = 8, max_scan: int = 3000,
+                   time_budget: float = 4.0) -> list[dict]:
+    """Most-recently-modified files under ``roots`` (for the Dashboard).
+
+    Bounded three ways so a slow network mount can never hang the caller: by
+    file count (``max_scan``) and by a wall-clock ``time_budget`` (seconds) —
+    whichever trips first stops the walk and we return what we found. A Google
+    Drive rclone mount, for instance, can take seconds *per directory*, so the
+    count guard alone isn't enough; the deadline is what actually caps it.
+    """
     found: list[dict] = []
     scanned = 0
     seen: set[str] = set()
+    deadline = time.monotonic() + time_budget
     for root in roots:
         root = Path(root)
         if not root.is_dir() or str(root) in seen:
@@ -45,8 +55,10 @@ def recent_changes(roots: list[Path], *, limit: int = 8, max_scan: int = 3000) -
                     found.append({"name": fn, "path": fp, "mtime": os.path.getmtime(fp)})
                 except OSError:
                     continue
-            if scanned >= max_scan:
+            if scanned >= max_scan or time.monotonic() >= deadline:
                 break
+        if scanned >= max_scan or time.monotonic() >= deadline:
+            break
     found.sort(key=lambda e: e["mtime"], reverse=True)
     return found[:limit]
 

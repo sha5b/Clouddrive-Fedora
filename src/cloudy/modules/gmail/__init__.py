@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# SPDX-FileCopyrightText: 2026 Fiber Elements
+# SPDX-FileCopyrightText: 2026 Shahab Nedaei
 """Gmail + Google Calendar module. Stage 6. See docs/AUTH.md."""
 
 from gettext import gettext as _

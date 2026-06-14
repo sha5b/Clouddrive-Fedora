@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# SPDX-FileCopyrightText: 2026 Fiber Elements
+# SPDX-FileCopyrightText: 2026 Shahab Nedaei
 """Per-account two-way offline sync (rclone bisync).
 
 Distinct from the live streaming *mount*: when an account has ``full_sync`` on,

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
   SPDX-License-Identifier: GPL-3.0-or-later
-  SPDX-FileCopyrightText: 2026 Fiber Elements
+  SPDX-FileCopyrightText: 2026 Shahab Nedaei
   Symbolic icon: single-color, uses currentColor via the "fill" CSS class.
 -->
 <svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">

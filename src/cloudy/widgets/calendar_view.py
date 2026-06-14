@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# SPDX-FileCopyrightText: 2026 Fiber Elements
+# SPDX-FileCopyrightText: 2026 Shahab Nedaei
 """Calendar surface: a two-pane week agenda (Outlook-style).
 
 Left pane = events for the next 7 days, grouped by day. For Microsoft accounts a

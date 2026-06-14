@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# SPDX-FileCopyrightText: 2026 Fiber Elements
+# SPDX-FileCopyrightText: 2026 Shahab Nedaei
 """Mail surface: a two-pane reader.
 
 Left pane = a folder switcher + an email-style message list (plain ``Gtk.Label``s
@@ -15,7 +15,7 @@ from gettext import gettext as _
 
 from gi.repository import Adw, Gtk, Pango
 
-from .format import sender_name, short_time
+from .format import esc, sender_name, short_time
 from .source_nav import (
     SCOPE_HINT,
     SourceTabs,
@@ -188,7 +188,10 @@ class MailView(Adw.Bin):
             lambda: self._window.sign_in_account(self._account)))
 
     def _reader_placeholder(self, icon: str, title: str, description: str) -> Gtk.Widget:
-        return Adw.StatusPage(icon_name=icon, title=title, description=description)
+        # StatusPage parses title/description as Pango markup; escape since one
+        # caller passes a raw API error string (may contain < or &).
+        return Adw.StatusPage(icon_name=icon, title=esc(title),
+                              description=esc(description))
 
     def _reader_loading(self) -> Gtk.Widget:
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12,

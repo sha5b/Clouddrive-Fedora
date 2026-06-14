@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# SPDX-FileCopyrightText: 2026 Fiber Elements
+# SPDX-FileCopyrightText: 2026 Shahab Nedaei
 """Google OAuth2 for the Gmail and Calendar APIs.
 
 Installed-app flow with **PKCE** via the **system browser + a loopback redirect**
@@ -20,6 +20,7 @@ import json
 import secrets as _secrets
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Sequence
@@ -156,6 +157,9 @@ class GoogleAuth:
         if self._client_secret:
             data["client_secret"] = self._client_secret
         resp = self._post_token(data)
+        if not resp.get("access_token"):
+            raise AuthError(resp.get("error_description")
+                            or resp.get("error") or "no access token returned")
         resp["expiry"] = time.time() + resp.get("expires_in", 3600)
         return resp
 
@@ -176,10 +180,15 @@ class GoogleAuth:
         if self._client_secret:
             data["client_secret"] = self._client_secret
         resp = self._post_token(data)
-        self._token["access_token"] = resp.get("access_token", "")
+        token = resp.get("access_token")
+        if not token:
+            # Refresh failed (revoked/expired refresh token, network error).
+            # Return None so callers surface "re-sign in" rather than crash.
+            return None
+        self._token["access_token"] = token
         self._token["expiry"] = time.time() + resp.get("expires_in", 3600)
         self._store()
-        return self._token.get("access_token")
+        return token
 
     def sign_out(self) -> None:
         self._token = {}
@@ -190,13 +199,26 @@ class GoogleAuth:
     def _post_token(data: dict) -> dict:
         body = urllib.parse.urlencode(data).encode()
         req = urllib.request.Request(TOKEN_URI, data=body, method="POST")
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read().decode())
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return json.loads(resp.read().decode())
+        except urllib.error.HTTPError as exc:
+            # Google returns a JSON error body (e.g. invalid_grant) on 4xx.
+            try:
+                return json.loads(exc.read().decode())
+            except (ValueError, OSError):
+                raise AuthError(f"token request failed: HTTP {exc.code}") from exc
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            raise AuthError(f"token request failed: {exc}") from exc
 
     @staticmethod
     def fetch_email(access_token: str) -> str | None:
         req = urllib.request.Request(
             USERINFO, headers={"Authorization": f"Bearer {access_token}"}
         )
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            return json.loads(resp.read().decode()).get("email")
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                return json.loads(resp.read().decode()).get("email")
+        except (urllib.error.URLError, OSError, ValueError):
+            # Best-effort: the email is only used to label the account.
+            return None

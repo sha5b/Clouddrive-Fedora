@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# SPDX-FileCopyrightText: 2026 Fiber Elements
+# SPDX-FileCopyrightText: 2026 Shahab Nedaei
 """Reading-pane content for a single calendar event (Outlook-style detail).
 
 Shows the time, location, organizer and attendees, a Join/Open action bar and

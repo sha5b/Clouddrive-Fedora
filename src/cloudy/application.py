@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# SPDX-FileCopyrightText: 2026 Fiber Elements
+# SPDX-FileCopyrightText: 2026 Shahab Nedaei
 """The Adw.Application subclass: actions, lifecycle, and the main window."""
 
 import os
@@ -242,11 +242,11 @@ class CloudyApplication(Adw.Application):
         about = Adw.AboutDialog(
             application_name=_("Cloudy"),
             application_icon=self.application_id,
-            developer_name=_("Fiber Elements"),
+            developer_name=_("Shahab Nedaei"),
             version=self.version,
             license_type=Gtk.License.GPL_3_0,
             website="https://github.com/sha5b/Clouddrive-Fedora",
             issue_url="https://github.com/sha5b/Clouddrive-Fedora/issues",
-            copyright="© 2026 Fiber Elements",
+            copyright="© 2026 Shahab Nedaei",
         )
         about.present(self.props.active_window)

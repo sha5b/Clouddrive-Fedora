@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# SPDX-FileCopyrightText: 2026 Fiber Elements
+# SPDX-FileCopyrightText: 2026 Shahab Nedaei
 """Mirror Cloudy events into a local Evolution Data Server (EDS) calendar.
 
 GNOME Shell's top-bar calendar reads from EDS, so to make Cloudy events show
@@ -17,7 +17,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 _CAL_NAME = "Cloudy"
-_PRODID = "-//Fiber Elements//Cloudy//EN"
+_PRODID = "-//Shahab Nedaei//Cloudy//EN"
 
 
 def _log(msg: str) -> None:

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# SPDX-FileCopyrightText: 2026 Fiber Elements
+# SPDX-FileCopyrightText: 2026 Shahab Nedaei
 """Microsoft Graph authentication via MSAL.
 
 Public-client (no secret) flow. ``sign_in_interactive`` opens the user's system
@@ -14,13 +14,26 @@ browser flow completes). See docs/AUTH.md for the one-time app registration.
 from __future__ import annotations
 
 import json
+import urllib.error
 import urllib.request
 from typing import Sequence
 
 import msal
+import requests
 
 AUTHORITY = "https://login.microsoftonline.com/common"
 GRAPH_ME = "https://graph.microsoft.com/v1.0/me"
+
+# MSAL's default requests.Session has NO timeout, so a silent token refresh can
+# hang indefinitely on a stalled connection (and freeze whatever view triggered
+# it). Inject a default timeout on every request unless the caller set one.
+_HTTP_TIMEOUT = 30
+
+
+class _TimeoutSession(requests.Session):
+    def request(self, *args, **kwargs):
+        kwargs.setdefault("timeout", _HTTP_TIMEOUT)
+        return super().request(*args, **kwargs)
 
 # Delegated scopes. Request only the subset a given feature needs (incremental
 # consent). offline_access/openid/profile are added by MSAL automatically.
@@ -68,7 +81,8 @@ class GraphAuth:
             self._cache.deserialize(blob)
 
         self._app = msal.PublicClientApplication(
-            client_id, authority=AUTHORITY, token_cache=self._cache
+            client_id, authority=AUTHORITY, token_cache=self._cache,
+            http_client=_TimeoutSession(),
         )
 
     def _persist(self) -> None:
@@ -90,7 +104,11 @@ class GraphAuth:
         accounts = self._app.get_accounts()
         if not accounts:
             return None
-        result = self._app.acquire_token_silent(list(scopes), account=accounts[0])
+        try:
+            result = self._app.acquire_token_silent(list(scopes), account=accounts[0])
+        except (requests.RequestException, OSError):
+            # Network error mid-refresh: behave like "no token", callers retry.
+            return None
         self._persist()
         return result.get("access_token") if result else None
 
@@ -106,6 +124,10 @@ class GraphAuth:
         req = urllib.request.Request(
             GRAPH_ME, headers={"Authorization": f"Bearer {access_token}"}
         )
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read().decode())
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read().decode())
+        except (urllib.error.URLError, OSError, ValueError):
+            # Best-effort: the UPN is only used to label the account.
+            return None
         return data.get("userPrincipalName") or data.get("mail")

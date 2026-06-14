@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
 SPDX-License-Identifier: GPL-3.0-or-later
-SPDX-FileCopyrightText: 2026 Fiber Elements
+SPDX-FileCopyrightText: 2026 Shahab Nedaei
 -->
 <schemalist gettext-domain="cloudy">
-  <schema id="com.fiberelements.Cloudy" path="/com/fiberelements/Cloudy/">
+  <schema id="io.github.sha5b.Clouddrive" path="/io/github/sha5b/Clouddrive/">
 
     <key name="window-width" type="i">
       <default>900</default>

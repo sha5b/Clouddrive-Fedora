@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# SPDX-FileCopyrightText: 2026 Fiber Elements
+# SPDX-FileCopyrightText: 2026 Shahab Nedaei
 """Mount OneDrive/SharePoint libraries so they appear in the file manager.
 
 A mounted library shows up in Nautilus like a network drive. We get that two
@@ -40,9 +40,9 @@ def _setting(key: str, default: str = "") -> str:
         from gi.repository import Gio
 
         source = Gio.SettingsSchemaSource.get_default()
-        if source is None or source.lookup("com.fiberelements.Cloudy", True) is None:
+        if source is None or source.lookup("io.github.sha5b.Clouddrive", True) is None:
             return default
-        return Gio.Settings.new("com.fiberelements.Cloudy").get_string(key) or default
+        return Gio.Settings.new("io.github.sha5b.Clouddrive").get_string(key) or default
     except Exception:  # noqa: BLE001
         return default
 
@@ -130,9 +130,30 @@ class MountManager:
         (used for per-account mount locations); falls back to ``mount_root()``."""
         return (base or mount_root()) / self._safe_name(name)
 
+    @staticmethod
+    def active_mounts() -> set[str]:
+        """All currently-mounted paths, read from the kernel mount table.
+
+        Stall-proof and reliable across sessions: parses ``/proc/self/mountinfo``
+        directly, so it never stats (and never blocks on) a possibly-hung FUSE
+        mountpoint the way ``os.path.ismount`` would. Returns absolute paths."""
+        paths: set[str] = set()
+        try:
+            with open("/proc/self/mountinfo", encoding="utf-8") as fh:
+                for line in fh:
+                    fields = line.split(" ")
+                    if len(fields) > 4:
+                        # Field 5 is the mount point; mountinfo octal-escapes
+                        # space/tab/newline/backslash in paths.
+                        mp = (fields[4].replace("\\040", " ").replace("\\011", "\t")
+                              .replace("\\012", "\n").replace("\\134", "\\"))
+                        paths.add(mp)
+        except OSError:
+            pass
+        return paths
+
     def is_mounted(self, mountpoint: Path) -> bool:
-        # os.path.ismount is true for an active FUSE mount.
-        return mountpoint.is_dir() and os.path.ismount(mountpoint)
+        return str(mountpoint) in self.active_mounts()
 
     # -- rclone command construction (testable without running it) -------
     def rclone_mount_argv(self, remote: str, mountpoint: Path) -> list[str]:

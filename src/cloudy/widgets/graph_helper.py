@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# SPDX-FileCopyrightText: 2026 Fiber Elements
+# SPDX-FileCopyrightText: 2026 Shahab Nedaei
 """Shared helper: build a per-account Microsoft Graph client for the UI.
 
 The capability views (Files/Mail/Calendar) each talk to Graph on behalf of one

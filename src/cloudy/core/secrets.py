@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# SPDX-FileCopyrightText: 2026 Fiber Elements
+# SPDX-FileCopyrightText: 2026 Shahab Nedaei
 """Secret storage via libsecret (Secret Service / portal inside Flatpak).
 
 OAuth/MSAL token caches are stored here, never in plaintext on disk. Inside the
@@ -21,7 +21,7 @@ from gi.repository import Secret  # noqa: E402
 
 #: Schema describing the attributes we key secrets on.
 _SCHEMA = Secret.Schema.new(
-    "com.fiberelements.Cloudy.Token",
+    "io.github.sha5b.Clouddrive.Token",
     Secret.SchemaFlags.NONE,
     {
         "account": Secret.SchemaAttributeType.STRING,

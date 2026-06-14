@@ -1,6 +1,6 @@
 <!--
 SPDX-License-Identifier: GPL-3.0-or-later
-SPDX-FileCopyrightText: 2026 Fiber Elements
+SPDX-FileCopyrightText: 2026 Shahab Nedaei
 -->
 
 # Changelog
@@ -42,7 +42,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   clear prompt to install rclone/onedriver when absent. Sign-in now requests
   Files scopes so file access works without a second consent.
 - Nautilus integration: the app exports a D-Bus sync-status service
-  (`com.fiberelements.Cloudy` `…/Sync`) registered on its own bus name; the
+  (`io.github.sha5b.Clouddrive` `…/Sync`) registered on its own bus name; the
   host `nautilus-python` (API 4.0) extension draws sync emblems (InfoProvider)
   and adds right-click Copy share link / Free up space / Sync this folder
   (MenuProvider) via D-Bus. Install with `make install-nautilus`.

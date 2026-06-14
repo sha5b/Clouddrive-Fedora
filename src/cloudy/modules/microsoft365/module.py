@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# SPDX-FileCopyrightText: 2026 Fiber Elements
+# SPDX-FileCopyrightText: 2026 Shahab Nedaei
 """Microsoft 365 provider module.
 
 A single Microsoft 365 account authenticates once (Microsoft Graph, OAuth2) and

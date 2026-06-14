@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# SPDX-FileCopyrightText: 2026 Fiber Elements
+# SPDX-FileCopyrightText: 2026 Shahab Nedaei
 """Shared building blocks for the Mail and Calendar surfaces.
 
 Both are two-pane views over a Microsoft account's **Me / Teams / Shared**

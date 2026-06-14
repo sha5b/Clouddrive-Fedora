@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# SPDX-FileCopyrightText: 2026 Fiber Elements
+# SPDX-FileCopyrightText: 2026 Shahab Nedaei
 """Dashboard: everything at a glance across all signed-in accounts.
 
 A two-pane surface (like Mail/Calendar): the left pane is a section switcher with
@@ -18,6 +18,7 @@ from pathlib import Path
 from gi.repository import Adw, Gio, GLib, Gtk, Pango
 
 from ..modules.microsoft365.mounts import (
+    MountManager,
     account_mount_base,
     mount_root,
     sync_root,
@@ -164,20 +165,15 @@ class DashboardView(Adw.Bin):
 
     @staticmethod
     def _count_mounted(accounts) -> int:
-        roots = {mount_root()}
+        # Count via the kernel mount table (stall-proof) rather than statting
+        # each child with os.path.ismount, which can block on a hung FUSE mount.
+        roots = {str(mount_root())}
         for account in accounts:
             base = account_mount_base(account.mount_location)
             if base is not None:
-                roots.add(base)
-        mounted = 0
-        for root in roots:
-            try:
-                for child in Path(root).iterdir():
-                    if child.is_dir() and os.path.ismount(child):
-                        mounted += 1
-            except OSError:
-                continue
-        return mounted
+                roots.add(str(base))
+        return sum(1 for mp in MountManager.active_mounts()
+                   if os.path.dirname(mp) in roots)
 
     @staticmethod
     def _pin_detail(client, pin, start_iso, end_iso) -> str:

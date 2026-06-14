@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# SPDX-FileCopyrightText: 2026 Fiber Elements
+# SPDX-FileCopyrightText: 2026 Shahab Nedaei
 #
 # Flatpak manifest for Cloudy. Targets the GNOME 50 runtime (Fedora 44).
 # Build:  flatpak-builder --user --install --force-clean _build/flatpak \
-#             com.fiberelements.Cloudy.yml
+#             io.github.sha5b.Clouddrive.yml
 
-id: com.fiberelements.Cloudy
+id: io.github.sha5b.Clouddrive
 runtime: org.gnome.Platform
 runtime-version: '50'
 sdk: org.gnome.Sdk
@@ -18,7 +18,7 @@ finish-args:
   - --device=dri
   # The sync/mount daemons and the Nautilus extension run on the HOST; the app
   # talks to them over the session bus.
-  - --talk-name=com.fiberelements.Cloudy
+  - --talk-name=io.github.sha5b.Clouddrive
   # Secrets use the Secret Service portal (per-app keyring) — no broad hole.
 
 cleanup:
@@ -69,3 +69,15 @@ modules:
     sources:
       - type: dir
         path: .
+        # NEVER copy local secrets or build/VCS cruft into the sandbox build.
+        # The app reads credentials at runtime (env / GSettings), not from a
+        # bundled file — see the security note in docs/SECRETS.md.
+        skip:
+          - .env
+          - .env.example
+          - .git
+          - _build
+          - _install
+          - .flatpak-builder
+          - po/*.mo
+          - po/*.gmo

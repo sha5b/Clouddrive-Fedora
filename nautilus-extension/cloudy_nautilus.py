@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# SPDX-FileCopyrightText: 2026 Fiber Elements
+# SPDX-FileCopyrightText: 2026 Shahab Nedaei
 """Cloudy Nautilus extension (host-side, nautilus-python 4.x / GTK4).
 
 Runs in the HOST Nautilus process (not the Flatpak sandbox). It talks to the
-Cloudy app over D-Bus (com.fiberelements.Cloudy, see cloudy.core.dbus_service)
+Cloudy app over D-Bus (io.github.sha5b.Clouddrive, see cloudy.core.dbus_service)
 to add right-click controls (MenuProvider): Sync this folder / Free up space /
 Copy share link.
 
@@ -28,9 +28,9 @@ for _ver in ("4.1", "4.0"):
         continue
 from gi.repository import Gio, GLib, GObject, Nautilus  # noqa: E402
 
-BUS_NAME = "com.fiberelements.Cloudy"
-OBJECT_PATH = "/com/fiberelements/Cloudy/Sync"
-INTERFACE = "com.fiberelements.Cloudy.Sync"
+BUS_NAME = "io.github.sha5b.Clouddrive"
+OBJECT_PATH = "/io.github.sha5b.Clouddrive/Sync"
+INTERFACE = "io.github.sha5b.Clouddrive.Sync"
 
 _DBUS_TIMEOUT_MS = 400
 

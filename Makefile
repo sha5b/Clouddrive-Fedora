@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# SPDX-FileCopyrightText: 2026 Fiber Elements
+# SPDX-FileCopyrightText: 2026 Shahab Nedaei
 #
 # Convenience wrapper around Meson / Flatpak for reproducible builds.
 # See docs/BUILDING.md for details.
 
-APP_ID      := com.fiberelements.Cloudy
+APP_ID      := io.github.sha5b.Clouddrive
+VERSION     := $(shell sed -n "s/.*version: '\([0-9.]*\)'.*/\1/p" meson.build | head -1)
 BUILDDIR    := _build
 PREFIX      := $(CURDIR)/_install
 FLATPAK_DIR := _build/flatpak
@@ -13,8 +14,19 @@ SCHEMA_DIR  := $(PREFIX)/share/glib-2.0/schemas
 
 NAUTILUS_EXT_DIR := $(HOME)/.local/share/nautilus-python/extensions
 
+# RPM build tree (self-contained under _build/, no ~/rpmbuild needed).
+RPM_TOP     := $(CURDIR)/_build/rpm
+RPM_TARBALL := $(RPM_TOP)/SOURCES/cloudy-$(VERSION).tar.gz
+SPEC        := packaging/cloudy.spec
+
+# Build-time credentials, sourced from .env when present. Both RPM and Flatpak
+# read these; absent .env -> a credential-free build (no secrets, manual setup).
+# Wrapped so the secret only enters the recipe shell, never the make environment.
+LOAD_ENV    := set -a; [ -f .env ] && . ./.env; set +a;
+
 .PHONY: all bootstrap setup build install run clean distclean \
-        flatpak flatpak-run lint test install-nautilus uninstall-nautilus
+        flatpak flatpak-run flatpak-test lint test install-nautilus \
+        uninstall-nautilus rpm srpm dist-tarball
 
 all: build
 
@@ -48,9 +60,56 @@ run: install
 test: build
 	meson test -C $(BUILDDIR) --print-errorlogs
 
-## Build + install the Flatpak (reproducible, pinned runtime)
-flatpak:
-	flatpak-builder --user --install --force-clean $(FLATPAK_DIR) $(APP_ID).yml
+## --- RPM ----------------------------------------------------------------
+## Reproducible source tarball (excludes secrets, build cruft, VCS).
+dist-tarball:
+	@mkdir -p $(RPM_TOP)/SOURCES $(RPM_TOP)/SPECS $(RPM_TOP)/BUILD \
+	          $(RPM_TOP)/BUILDROOT $(RPM_TOP)/RPMS $(RPM_TOP)/SRPMS
+	@rm -rf $(RPM_TOP)/cloudy-$(VERSION)
+	@rsync -a \
+	  --exclude='.git' --exclude='_build' --exclude='_install' \
+	  --exclude='.flatpak-builder' --exclude='.env' --exclude='.env.*' \
+	  --exclude='__pycache__' --exclude='*.py[co]' --exclude='*.flatpak' \
+	  --exclude='po/*.mo' --exclude='po/*.gmo' --exclude='subprojects/*/.git' \
+	  ./ $(RPM_TOP)/cloudy-$(VERSION)/
+	@tar -C $(RPM_TOP) -czf $(RPM_TARBALL) cloudy-$(VERSION)
+	@rm -rf $(RPM_TOP)/cloudy-$(VERSION)
+	@echo "Source tarball: $(RPM_TARBALL)"
+
+## Build a binary + source RPM into $(RPM_TOP)/RPMS, baking creds from .env.
+# --nodeps lets this run without root-installed BuildRequires; the local
+# toolchain (meson/gtk4 + the in-tree blueprint-compiler subproject) is enough.
+rpm: dist-tarball
+	@$(LOAD_ENV) rpmbuild --define "_topdir $(RPM_TOP)" \
+	  $${CLOUDY_MS_CLIENT_ID:+--define "ms_client_id $$CLOUDY_MS_CLIENT_ID"} \
+	  $${CLOUDY_GOOGLE_CLIENT_ID:+--define "google_client_id $$CLOUDY_GOOGLE_CLIENT_ID"} \
+	  $${CLOUDY_GOOGLE_CLIENT_SECRET:+--define "google_client_secret $$CLOUDY_GOOGLE_CLIENT_SECRET"} \
+	  --nodeps -ba $(SPEC)
+	@echo; echo "RPMs:"; find $(RPM_TOP)/RPMS $(RPM_TOP)/SRPMS -name '*.rpm'
+
+## Source RPM only.
+srpm: dist-tarball
+	@$(LOAD_ENV) rpmbuild --define "_topdir $(RPM_TOP)" --nodeps -bs $(SPEC)
+	@find $(RPM_TOP)/SRPMS -name '*.rpm'
+
+## --- Flatpak (local test build; never published) -------------------------
+## Build + install to the user installation, baking creds from .env into a
+## LOCAL manifest under _build/ (the committed manifest stays credential-free).
+flatpak: flatpak-test
+flatpak-test:
+	@mkdir -p $(FLATPAK_DIR)
+	@$(LOAD_ENV) python3 scripts/flatpak-local-manifest.py \
+	  $(APP_ID).yml $(CURDIR) $(FLATPAK_DIR)/$(APP_ID).local.yml
+	# GIT_CONFIG_* allows flatpak-builder's bare git mirror clones to work when
+	# the host sets `safe.bareRepository = explicit` (no global config change).
+	flatpak run \
+	  --env=GIT_CONFIG_COUNT=1 \
+	  --env=GIT_CONFIG_KEY_0=safe.bareRepository \
+	  --env=GIT_CONFIG_VALUE_0=all \
+	  org.flatpak.Builder --user --install --force-clean \
+	  --install-deps-from=flathub \
+	  $(FLATPAK_DIR)/build $(FLATPAK_DIR)/$(APP_ID).local.yml
+	@echo "Installed (user). Run it with: make flatpak-run"
 
 ## Run the installed Flatpak
 flatpak-run:

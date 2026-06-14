@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# SPDX-FileCopyrightText: 2026 Fiber Elements
+# SPDX-FileCopyrightText: 2026 Shahab Nedaei
 
 # --- Desktop entry -----------------------------------------------------------
 desktop_file = i18n.merge_file(
@@ -15,6 +15,20 @@ desktop_utils = find_program('desktop-file-validate', required: false)
 if desktop_utils.found()
   test('Validate desktop file', desktop_utils, args: [desktop_file])
 endif
+
+# --- D-Bus activation service ------------------------------------------------
+# The desktop entry is DBusActivatable (Cloudy is the system mailto:/.ics
+# handler), so a matching D-Bus service file is required — Flatpak's exporter
+# rejects the build without it, and it enables proper activation on the host.
+dbus_conf = configuration_data()
+dbus_conf.set('bindir', bindir)
+configure_file(
+         input: '@0@.service.in'.format(application_id),
+        output: '@0@.service'.format(application_id),
+  configuration: dbus_conf,
+       install: true,
+   install_dir: datadir / 'dbus-1' / 'services',
+)
 
 # --- AppStream metainfo ------------------------------------------------------
 metainfo_file = i18n.merge_file(
@@ -37,6 +51,28 @@ install_data(
   '@0@.gschema.xml'.format(application_id),
   install_dir: datadir / 'glib-2.0' / 'schemas',
 )
+
+# Optional build-time credential injection (release builds only). When any of
+# the credential options is set, generate a GSettings vendor override that fills
+# the empty schema defaults. A plain dev build sets none of these, so no
+# override is produced and the build ships zero credentials. See meson.options.
+ms_client_id         = get_option('ms_client_id')
+google_client_id     = get_option('google_client_id')
+google_client_secret = get_option('google_client_secret')
+if ms_client_id != '' or google_client_id != '' or google_client_secret != ''
+  cred_conf = configuration_data()
+  cred_conf.set('MS_CLIENT_ID', ms_client_id)
+  cred_conf.set('GOOGLE_CLIENT_ID', google_client_id)
+  cred_conf.set('GOOGLE_CLIENT_SECRET', google_client_secret)
+  configure_file(
+           input: 'cloudy.gschema.override.in',
+          output: '90_@0@.gschema.override'.format(application_id),
+    configuration: cred_conf,
+         install: true,
+     install_dir: datadir / 'glib-2.0' / 'schemas',
+  )
+  message('Credential override WILL be installed (release build).')
+endif
 
 compile_schemas = find_program('glib-compile-schemas', required: false)
 if compile_schemas.found()

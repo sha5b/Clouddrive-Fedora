@@ -1,6 +1,6 @@
 <!--
 SPDX-License-Identifier: GPL-3.0-or-later
-SPDX-FileCopyrightText: 2026 Fiber Elements
+SPDX-FileCopyrightText: 2026 Shahab Nedaei
 -->
 
 # Cloudy — Handoff / Continue Here
@@ -174,7 +174,7 @@ credentials, provisioner, dbus_service, sync, auth/), `modules/microsoft365/`
 `widgets/` (files/mail/calendar/dashboard/message/event views, **source_nav**,
 **file_browser**, clients, graph_helper, format). Data in `data/` (gschema,
 desktop, metainfo, blueprints, icons), Flatpak manifest
-`com.fiberelements.Cloudy.yml`.
+`io.github.sha5b.Clouddrive.yml`.
 ```
 widgets/source_nav.py   shared: SourceTabs, run_async, listbox/placeholder
                         helpers, is_scope_error, add-shared dialog, pin helpers

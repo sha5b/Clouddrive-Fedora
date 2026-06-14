@@ -1,13 +1,13 @@
 <!--
 SPDX-License-Identifier: GPL-3.0-or-later
-SPDX-FileCopyrightText: 2026 Fiber Elements
+SPDX-FileCopyrightText: 2026 Shahab Nedaei
 -->
 
 # Cloudy Nautilus extension
 
 This extension runs **on the host**, inside the Nautilus process — Nautilus does
 not load extensions from inside a Flatpak sandbox. It communicates with the
-sandboxed Cloudy app over **D-Bus** (`com.fiberelements.Cloudy`).
+sandboxed Cloudy app over **D-Bus** (`io.github.sha5b.Clouddrive`).
 
 ## What it provides
 

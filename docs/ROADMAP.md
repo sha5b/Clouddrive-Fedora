@@ -1,6 +1,6 @@
 <!--
 SPDX-License-Identifier: GPL-3.0-or-later
-SPDX-FileCopyrightText: 2026 Fiber Elements
+SPDX-FileCopyrightText: 2026 Shahab Nedaei
 -->
 
 # Roadmap
@@ -35,7 +35,7 @@ Staged plan. Each stage is independently useful and testable on Fedora 44.
 - Host user systemd units for the mount/sync daemons.
 
 ## Stage 4 — Nautilus integration (the extras) ✅
-- App exports a **D-Bus sync-status service** (`com.fiberelements.Cloudy`,
+- App exports a **D-Bus sync-status service** (`io.github.sha5b.Clouddrive`,
   `…/Sync`): `StatusForPath`, `SyncPath`, `FreeUpSpace`, `CreateShareLink`,
   `StatusChanged`.
 - `nautilus-python` (API 4.0) `InfoProvider` draws emblems and `MenuProvider`
