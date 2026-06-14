@@ -44,7 +44,7 @@ SPDX-FileCopyrightText: 2026 Fiber Elements
     </key>
 
     <key name="microsoft-client-id" type="s">
-      <default>'dcd8ee18-6e62-4c5a-b01f-86f9556f8fed'</default>
+      <default>''</default>
       <summary>Microsoft Entra (Azure AD) public client/application ID</summary>
       <description>
         OAuth public client ID for Microsoft Graph sign-in. Ships empty; set to
