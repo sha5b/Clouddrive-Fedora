@@ -1,0 +1,13 @@
+[Desktop Entry]
+Name=Clouddrive
+GenericName=Cloud Storage & Mail
+# Translators: search keywords, separated by semicolons, not shown to the user
+Comment=Use OneDrive, SharePoint and unified mail on your desktop
+Keywords=OneDrive;SharePoint;Microsoft 365;Cloud;Sync;Mail;Calendar;Files;
+Exec=clouddrive %U
+Icon=com.fiberelements.Clouddrive
+Terminal=false
+Type=Application
+Categories=GNOME;GTK;Network;FileTransfer;
+StartupNotify=true
+DBusActivatable=true

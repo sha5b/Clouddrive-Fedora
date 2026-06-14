@@ -1,0 +1,96 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-FileCopyrightText: 2026 Fiber Elements
+
+using Gtk 4.0;
+using Adw 1;
+
+menu primary_menu {
+  section {
+    item {
+      label: _("_Preferences");
+      action: "app.preferences";
+    }
+
+    item {
+      label: _("_Keyboard Shortcuts");
+      action: "win.show-help-overlay";
+    }
+
+    item {
+      label: _("_About Clouddrive");
+      action: "app.about";
+    }
+  }
+}
+
+template $ClouddriveWindow: Adw.ApplicationWindow {
+  title: _("Clouddrive");
+  width-request: 360;
+  height-request: 294;
+
+  content: Adw.NavigationSplitView split_view {
+    min-sidebar-width: 220;
+    max-sidebar-width: 320;
+
+    sidebar: Adw.NavigationPage {
+      title: _("Clouddrive");
+
+      child: Adw.ToolbarView {
+        [top]
+        Adw.HeaderBar {
+          [end]
+          MenuButton {
+            primary: true;
+            icon-name: "open-menu-symbolic";
+            tooltip-text: _("Main Menu");
+            menu-model: primary_menu;
+          }
+        }
+
+        content: Gtk.ScrolledWindow {
+          hscrollbar-policy: never;
+
+          child: ListBox sidebar_list {
+            selection-mode: single;
+
+            styles [
+              "navigation-sidebar",
+            ]
+          };
+        };
+      };
+    };
+
+    content: Adw.NavigationPage {
+      title: _("Welcome");
+
+      child: Adw.ToolbarView {
+        [top]
+        Adw.HeaderBar {}
+
+        content: Adw.ViewStack content_stack {
+          Adw.ViewStackPage {
+            name: "welcome";
+
+            child: Adw.StatusPage {
+              icon-name: "weather-overcast-symbolic";
+              title: _("Welcome to Clouddrive");
+              description: _("Add an account to start using OneDrive, SharePoint and unified mail.");
+
+              child: Button {
+                halign: center;
+                label: _("Add Account…");
+                action-name: "app.add-account";
+
+                styles [
+                  "pill",
+                  "suggested-action",
+                ]
+              };
+            };
+          }
+        };
+      };
+    };
+  };
+}

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+SPDX-License-Identifier: GPL-3.0-or-later
+SPDX-FileCopyrightText: 2026 Fiber Elements
+-->
+<gresources>
+  <gresource prefix="/com/fiberelements/Clouddrive">
+    <file preprocess="xml-stripblanks">ui/window.ui</file>
+    <file preprocess="xml-stripblanks">ui/preferences.ui</file>
+  </gresource>
+</gresources>

@@ -1,0 +1,12 @@
+# List of source files containing translatable strings.
+# Paths are relative to the project root.
+data/com.fiberelements.Clouddrive.desktop.in
+data/com.fiberelements.Clouddrive.metainfo.xml.in
+data/ui/window.blp
+data/ui/preferences.blp
+src/clouddrive/application.py
+src/clouddrive/window.py
+src/clouddrive/preferences.py
+src/clouddrive/modules/onedrive/module.py
+src/clouddrive/modules/graph_mail/__init__.py
+src/clouddrive/modules/gmail/__init__.py

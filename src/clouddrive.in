@@ -1,0 +1,38 @@
+#!@PYTHON@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Fiber Elements
+#
+# Configured launcher for Clouddrive. Meson substitutes the @...@ tokens.
+
+import os
+import sys
+import signal
+import locale
+import gettext
+
+VERSION = '@VERSION@'
+APP_ID = '@APP_ID@'
+pkgdatadir = '@pkgdatadir@'
+localedir = '@localedir@'
+
+sys.path.insert(1, pkgdatadir)
+signal.signal(signal.SIGINT, signal.SIG_DFL)
+
+# Set up translations.
+try:
+    locale.bindtextdomain('clouddrive', localedir)
+    locale.textdomain('clouddrive')
+except (locale.Error, AttributeError):
+    pass
+gettext.install('clouddrive', localedir)
+
+if __name__ == '__main__':
+    import gi
+
+    from gi.repository import Gio
+    resource = Gio.Resource.load(
+        os.path.join(pkgdatadir, APP_ID + '.gresource'))
+    resource._register()
+
+    from clouddrive import main
+    sys.exit(main.main(VERSION, APP_ID))

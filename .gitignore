@@ -1,0 +1,30 @@
+# Build output
+/_build/
+/build/
+/builddir/
+/_install/
+/.flatpak-builder/
+/repo/
+*.flatpak
+
+# Meson subproject sources (kept as .wrap files only)
+/subprojects/blueprint-compiler/
+/subprojects/*/
+/subprojects/*.wraplock
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Generated translation artifacts
+/po/*.gmo
+/po/*.mo

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  SPDX-License-Identifier: GPL-3.0-or-later
+  SPDX-FileCopyrightText: 2026 Fiber Elements
+  Placeholder app icon. Replace with a HIG-compliant icon before release
+  (see https://developer.gnome.org/hig/guidelines/app-icons.html).
+-->
+<svg width="128" height="128" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3584e4"/>
+      <stop offset="1" stop-color="#1a5fb4"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="112" height="112" rx="26" fill="url(#bg)"/>
+  <path d="M44 84a18 18 0 0 1-2-35.8A24 24 0 0 1 88 50a16 16 0 0 1-4 34z"
+        fill="#ffffff" fill-opacity="0.95"/>
+  <rect x="52" y="70" width="24" height="6" rx="3" fill="#1a5fb4"/>
+  <rect x="52" y="80" width="24" height="6" rx="3" fill="#1a5fb4" fill-opacity="0.6"/>
+</svg>

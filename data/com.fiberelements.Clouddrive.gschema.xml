@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+SPDX-License-Identifier: GPL-3.0-or-later
+SPDX-FileCopyrightText: 2026 Fiber Elements
+-->
+<schemalist gettext-domain="clouddrive">
+  <schema id="com.fiberelements.Clouddrive" path="/com/fiberelements/Clouddrive/">
+
+    <key name="window-width" type="i">
+      <default>900</default>
+      <summary>Window width</summary>
+    </key>
+
+    <key name="window-height" type="i">
+      <default>640</default>
+      <summary>Window height</summary>
+    </key>
+
+    <key name="window-maximized" type="b">
+      <default>false</default>
+      <summary>Window maximized state</summary>
+    </key>
+
+    <key name="enabled-modules" type="as">
+      <default>['onedrive']</default>
+      <summary>Identifiers of enabled service modules</summary>
+      <description>
+        Which modules the module engine should activate at startup.
+      </description>
+    </key>
+
+    <key name="last-active-view" type="s">
+      <default>'welcome'</default>
+      <summary>The view shown when the app was last closed</summary>
+    </key>
+
+  </schema>
+</schemalist>

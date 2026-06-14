@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Fallback source for blueprint-compiler when the host does not package it.
+# Meson uses this only if `blueprint-compiler` is not found on PATH.
+[wrap-git]
+directory = blueprint-compiler
+url = https://gitlab.gnome.org/GNOME/blueprint-compiler.git
+revision = v0.16.0
+depth = 1
+
+[provide]
+program_names = blueprint-compiler
