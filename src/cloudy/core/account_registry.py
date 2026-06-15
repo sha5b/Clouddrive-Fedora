@@ -35,6 +35,28 @@ class Account:
     #  "id": <address-or-group-id>, "name": <label>}.
     pinned_sources: list = field(default_factory=list)
 
+    # Consumer mail domains that have no Teams/SharePoint/Chat/Workspace and no
+    # shared-mailbox delegation — the business-only surfaces are hidden for them.
+    _PERSONAL_DOMAINS = {
+        "google": {"gmail.com", "googlemail.com"},
+        "microsoft": {"outlook.com", "hotmail.com", "live.com", "msn.com",
+                      "passport.com", "outlook.de", "live.de"},
+    }
+
+    @property
+    def is_personal(self) -> bool:
+        """True for a consumer account (vs. a work/school or Workspace one),
+        decided from the signed-in email domain. Business/Workspace and unknown
+        accounts return False so nothing is hidden for them."""
+        domain = (self.display_name or "").strip().lower().rpartition("@")[2]
+        return domain in self._PERSONAL_DOMAINS.get(self.provider, set())
+
+    @property
+    def is_business(self) -> bool:
+        """A signed-in work/school or Workspace account (qualifies for Teams /
+        SharePoint / Chat / shared mailboxes)."""
+        return self.signed_in and not self.is_personal
+
     def to_dict(self) -> dict:
         return asdict(self)
 

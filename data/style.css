@@ -6,6 +6,13 @@
  * tokens here; keep widget geometry on the metrics constants.
  */
 
+/* Brand accent — teal instead of the default blue. Overriding libadwaita's
+ * named accent tokens (loaded at APPLICATION priority) recolors suggested
+ * actions, switches, selections, links and our own accent-based widgets. */
+@define-color accent_bg_color #2190a4;
+@define-color accent_fg_color #ffffff;
+@define-color accent_color #1f8295;
+
 /* Secondary / metadata text — one token for the scattered caption+dim-label
  * pairs (timestamps, subtitles, column headers, captions). */
 .cloudy-meta {
@@ -44,4 +51,80 @@
   border-radius: 999px;
   background-color: alpha(currentColor, 0.08);
   padding: 1px 4px;
+}
+
+/* Unread-count badge — accent pill on sidebar account rows. Hidden (via
+ * set_visible) when the count is zero. */
+.cloudy-badge {
+  border-radius: 999px;
+  background-color: @accent_bg_color;
+  color: @accent_fg_color;
+  font-size: 0.8em;
+  font-weight: bold;
+  padding: 1px 7px;
+  min-width: 8px;
+}
+/* Red variant — new chat messages. */
+.cloudy-badge.chat {
+  background-color: @error_bg_color;
+  color: @error_fg_color;
+}
+
+/* "Live now" marker on an ongoing event / live meeting. */
+.cloudy-live {
+  color: @error_color;
+  font-weight: bold;
+  font-size: 0.8em;
+}
+
+/* Chat list avatar circle (initials or a meeting glyph). */
+.cloudy-avatar {
+  border-radius: 999px;
+  min-width: 34px;
+  min-height: 34px;
+  background-color: alpha(@accent_bg_color, 0.25);
+  color: @accent_fg_color;
+  font-weight: bold;
+}
+.cloudy-avatar.meeting {
+  background-color: alpha(@accent_bg_color, 0.55);
+}
+/* Unread dot overlaid on a chat avatar. */
+.cloudy-unread-dot {
+  color: @error_color;
+}
+
+/* Teams-style presence dot overlaid on a chat avatar (bottom-right). The white
+   ring lifts it off the avatar art the way Teams/GNOME do. */
+.cloudy-presence {
+  -gtk-icon-shadow: 0 0 2px @window_bg_color;
+}
+.cloudy-presence-available { color: @success_color; }
+.cloudy-presence-busy      { color: @error_color; }
+.cloudy-presence-dnd       { color: @error_color; }
+.cloudy-presence-away      { color: @warning_color; }
+
+/* Emoji reaction chip under a chat bubble. */
+.cloudy-reaction {
+  border-radius: 999px;
+  background-color: alpha(currentColor, 0.10);
+  padding: 0 6px;
+  font-size: 0.85em;
+  margin-top: 2px;
+}
+
+/* Chat message bubble — received (subtle fill) vs. mine (accent, right). */
+.cloudy-bubble {
+  border-radius: 12px;
+  padding: 6px 10px;
+  background-color: alpha(currentColor, 0.08);
+}
+.cloudy-bubble.mine {
+  background-color: alpha(@accent_bg_color, 0.85);
+  color: @accent_fg_color;
+}
+/* A selected message (multi-select mode) gets an accent ring. */
+.cloudy-bubble.cloudy-selected {
+  outline: 2px solid @accent_color;
+  outline-offset: 1px;
 }

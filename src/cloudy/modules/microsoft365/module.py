@@ -24,6 +24,7 @@ from gettext import gettext as _
 
 from ...core.interfaces import (
     CalendarCapability,
+    ChatCapability,
     FilesCapability,
     MailCapability,
     ModuleContext,
@@ -36,7 +37,7 @@ from .graph import GraphClient
 
 
 class Microsoft365Module(
-    ServiceModule, FilesCapability, MailCapability, CalendarCapability
+    ServiceModule, FilesCapability, MailCapability, CalendarCapability, ChatCapability
 ):
     id = "microsoft365"
     name = _("Microsoft 365")
@@ -91,3 +92,13 @@ class Microsoft365Module(
     def list_events(self, calendar_id: str, start, end) -> list:
         # calendarView spans the default calendar; start/end are ISO-8601 UTC.
         return self._graph.list_events(start, end)
+
+    # -- ChatCapability (Teams chats) -------------------------------------
+    def list_chats(self) -> list:
+        return self._graph.list_chats()
+
+    def list_chat_messages(self, chat_id: str, *, limit: int = 30) -> list:
+        return self._graph.list_chat_messages(chat_id, limit=limit)
+
+    def send_chat_message(self, chat_id: str, text: str):
+        return self._graph.send_chat_message(chat_id, text)

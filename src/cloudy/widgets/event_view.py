@@ -148,7 +148,7 @@ def _responses_section(attendees: list) -> Gtk.Widget:
         names = groups[status]
         if not names:
             continue
-        label_txt, accent = _RESP_META[status][1], _RESP_META[status][2]
+        label_txt = _RESP_META[status][1]
         section = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         cap = Gtk.Label(label=f"{label_txt} · {len(names)}", xalign=0)
         cap.add_css_class("cloudy-meta")

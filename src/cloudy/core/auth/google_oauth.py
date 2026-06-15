@@ -46,6 +46,13 @@ SCOPES_CONTACTS = [
     "https://www.googleapis.com/auth/contacts.readonly",
     "https://www.googleapis.com/auth/contacts.other.readonly",
 ]
+# Google Chat (Workspace only — consumer Gmail has no Chat API). These are
+# RESTRICTED scopes: Google app verification is required before non-test users
+# can consent, so the Chat tab degrades gracefully when access is denied.
+SCOPES_CHAT = [
+    "https://www.googleapis.com/auth/chat.spaces.readonly",
+    "https://www.googleapis.com/auth/chat.messages",
+]
 
 _TOKEN_KIND = "google-token"
 
@@ -103,7 +110,7 @@ class GoogleAuth:
     # -- interactive (system browser + loopback + PKCE) ------------------
     def sign_in_interactive(self, scopes: Sequence[str] = None, open_url=None) -> dict:
         scopes = list(scopes or (SCOPES_BASE + SCOPES_MAIL + SCOPES_CALENDAR
-                                  + SCOPES_CONTACTS))
+                                  + SCOPES_CONTACTS + SCOPES_CHAT))
         verifier = _b64url(_secrets.token_bytes(48))
         challenge = _b64url(hashlib.sha256(verifier.encode()).digest())
 

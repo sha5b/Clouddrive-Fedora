@@ -23,11 +23,17 @@ import urllib.request
 from datetime import datetime, timezone
 from typing import Callable, Sequence
 
-from ...core.auth.google_oauth import SCOPES_CALENDAR, SCOPES_CONTACTS, SCOPES_MAIL
+from ...core.auth.google_oauth import (
+    SCOPES_CALENDAR,
+    SCOPES_CHAT,
+    SCOPES_CONTACTS,
+    SCOPES_MAIL,
+)
 
 GMAIL = "https://gmail.googleapis.com/gmail/v1"
 CALENDAR = "https://www.googleapis.com/calendar/v3"
 PEOPLE = "https://people.googleapis.com/v1"
+CHAT = "https://chat.googleapis.com/v1"
 
 
 class GoogleError(Exception):
@@ -158,11 +164,25 @@ class GoogleClient:
             out.append({"id": lab["id"], "name": lab.get("name", ""), "unread": 0})
         return out
 
+    def inbox_unread(self) -> int:
+        """Unread message count of the Inbox (Gmail's INBOX label carries it)."""
+        data = self._get(f"{GMAIL}/users/me/labels/INBOX", SCOPES_MAIL)
+        return int(data.get("messagesUnread", 0) or 0)
+
     def list_messages(self, folder_id: str = "INBOX", *, limit: int = 15) -> list[dict]:
-        listing = self._get(
-            f"{GMAIL}/users/me/messages?labelIds={folder_id}&maxResults={limit}",
-            SCOPES_MAIL,
-        )
+        return self.list_messages_page(folder_id, limit=limit)[0]
+
+    def list_messages_page(self, folder_id: str = "INBOX", *, limit: int = 15,
+                           page_token: str | None = None):
+        """Like :meth:`list_messages` but returns ``(messages, next_token)``.
+
+        ``next_token`` is Gmail's ``nextPageToken`` or ``None``; pass it back as
+        ``page_token`` to fetch the following page of older messages."""
+        url = (f"{GMAIL}/users/me/messages"
+               f"?labelIds={folder_id}&maxResults={limit}")
+        if page_token:
+            url += f"&pageToken={urllib.parse.quote(page_token)}"
+        listing = self._get(url, SCOPES_MAIL)
         out = []
         for ref in listing.get("messages", []):
             msg = self._get(
@@ -171,7 +191,7 @@ class GoogleClient:
                 SCOPES_MAIL,
             )
             out.append(self._message_from_json(msg))
-        return out
+        return out, listing.get("nextPageToken")
 
     @staticmethod
     def _message_from_json(msg: dict) -> dict:
@@ -219,7 +239,38 @@ class GoogleClient:
             "received": received,
             "body": content,
             "body_html": is_html,
+            "attachments": self._collect_attachments(payload),
         }
+
+    @staticmethod
+    def _collect_attachments(payload) -> list[dict]:
+        """Named attachment parts as ``[{id, name, content_type, size}]`` (bytes
+        fetched on demand by :meth:`fetch_mail_attachment`)."""
+        out: list[dict] = []
+
+        def walk(part) -> None:
+            body = part.get("body", {}) or {}
+            filename = part.get("filename") or ""
+            if filename and body.get("attachmentId"):
+                out.append({
+                    "id": body["attachmentId"],
+                    "name": filename,
+                    "content_type": part.get("mimeType", "") or "",
+                    "size": body.get("size", 0) or 0,
+                })
+            for sub in part.get("parts", []) or []:
+                walk(sub)
+
+        walk(payload or {})
+        return out
+
+    def fetch_mail_attachment(self, message_id: str, attachment_id: str) -> bytes:
+        """Download one Gmail attachment's bytes (base64url-decoded)."""
+        data = self._get(
+            f"{GMAIL}/users/me/messages/{message_id}/attachments/{attachment_id}",
+            SCOPES_MAIL)
+        raw = data.get("data", "")
+        return base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)) if raw else b""
 
     def mark_read(self, message_id: str, read: bool = True) -> None:
         """Mark a message read/unread by toggling the UNREAD label (gmail.modify)."""
@@ -232,35 +283,63 @@ class GoogleClient:
 
     # -- compose / reply --------------------------------------------------
     @staticmethod
-    def _raw_message(to, subject: str, body: str, *, cc=None, html: bool = False,
-                     headers: dict | None = None) -> str:
-        """Build an RFC-2822 message, base64url-encoded for Gmail's ``raw`` field."""
+    def _raw_message(to, subject: str, body: str, *, cc=None, bcc=None,
+                     html: bool = False, headers: dict | None = None,
+                     attachments=None, importance: str | None = None) -> str:
+        """Build an RFC-2822 message, base64url-encoded for Gmail's ``raw`` field.
+
+        ``attachments`` are ``[{name, content_type, data, inline?, content_id?}]``;
+        inline images are attached as ``related`` parts of the HTML body and
+        referenced by ``cid:``."""
         from email.message import EmailMessage
 
         msg = EmailMessage()
         msg["To"] = ", ".join(a for a in (to or []) if a)
         if cc:
             msg["Cc"] = ", ".join(a for a in cc if a)
+        if bcc:
+            msg["Bcc"] = ", ".join(a for a in bcc if a)
         msg["Subject"] = subject
+        if importance and importance != "normal":
+            # X-Priority 1 = High, 5 = Low; Importance header for good measure.
+            msg["X-Priority"] = "1" if importance == "high" else "5"
+            msg["Importance"] = "high" if importance == "high" else "low"
         for name, value in (headers or {}).items():
             if value:
                 msg[name] = value
+        inline = [a for a in (attachments or []) if a.get("inline")]
+        files = [a for a in (attachments or []) if not a.get("inline")]
         if html:
             msg.set_content("(This message is in HTML.)")
             msg.add_alternative(body, subtype="html")
+            html_part = msg.get_payload()[-1]  # the HTML alternative
+            for a in inline:
+                maintype, _, subtype = (
+                    a.get("content_type") or "image/png").partition("/")
+                html_part.add_related(
+                    a["data"], maintype, subtype or "png",
+                    cid=f"<{a.get('content_id', '')}>")
         else:
             msg.set_content(body)
+        for a in files:
+            maintype, _, subtype = (
+                a.get("content_type") or "application/octet-stream").partition("/")
+            msg.add_attachment(a["data"], maintype=maintype,
+                               subtype=subtype or "octet-stream",
+                               filename=a.get("name") or "attachment")
         return base64.urlsafe_b64encode(msg.as_bytes()).decode()
 
     def send_mail(self, *, to, subject: str, body: str, source: str = "me",
-                  address: str | None = None, cc=None, html: bool = False) -> None:
+                  address: str | None = None, cc=None, bcc=None, html: bool = False,
+                  attachments=None, importance: str | None = None) -> None:
         """Send a new message (Gmail always sends as the signed-in user; the
         ``source``/``address`` args are accepted for a uniform client API)."""
-        raw = self._raw_message(to, subject, body, cc=cc, html=html)
+        raw = self._raw_message(to, subject, body, cc=cc, bcc=bcc, html=html,
+                                attachments=attachments, importance=importance)
         self._post(f"{GMAIL}/users/me/messages/send", {"raw": raw}, SCOPES_MAIL)
 
     def reply_mail(self, message_id: str, body: str, *, reply_all: bool = False,
-                   html: bool = False) -> None:
+                   html: bool = False, attachments=None) -> None:
         """Reply on the original thread (To = original sender, subject ``Re: …``)."""
         meta = self._get(
             f"{GMAIL}/users/me/messages/{message_id}"
@@ -276,7 +355,7 @@ class GoogleClient:
         msg_id = hdrs.get("message-id", "")
         references = " ".join(x for x in (hdrs.get("references", ""), msg_id) if x)
         raw = self._raw_message(
-            [hdrs.get("from", "")], subject, body, html=html,
+            [hdrs.get("from", "")], subject, body, html=html, attachments=attachments,
             headers={"In-Reply-To": msg_id, "References": references},
         )
         self._post(f"{GMAIL}/users/me/messages/send",
@@ -418,3 +497,139 @@ class GoogleClient:
             "can_respond": False,  # Google calendar is read-only (scope)
         })
         return base
+
+    # -- Chat (Google Chat — Workspace only) ------------------------------
+    def list_chats(self, *, limit: int = 50) -> list[dict]:
+        """The user's Chat spaces (DMs + rooms). ``[{id, name, kind, ...}]``.
+
+        Google Chat is a Workspace product; consumer Gmail accounts have no
+        Chat API, so this raises a GoogleError the view shows as unavailable."""
+        return self.list_chats_page(limit=limit)[0]
+
+    def list_chats_page(self, *, limit: int = 50, page_token: str | None = None):
+        """A page of spaces, returning ``(chats, next_token)`` for "load more"."""
+        url = f"{CHAT}/spaces?pageSize={limit}"
+        if page_token:
+            url += f"&pageToken={urllib.parse.quote(page_token)}"
+        data = self._get(url, SCOPES_CHAT)
+        out = []
+        for s in data.get("spaces", []):
+            stype = s.get("spaceType") or s.get("type", "")
+            name = s.get("displayName") or (
+                "Direct message" if stype == "DIRECT_MESSAGE" else "Space")
+            out.append({
+                "id": s.get("name", ""),  # "spaces/AAA"
+                "name": html.unescape(name),
+                "kind": stype,
+                "preview": "",
+                "last_at": "",
+                "unread": False,  # Chat API has no simple per-space unread flag
+                "from_me": False,
+            })
+        return out, data.get("nextPageToken")
+
+    def start_chat(self, recipient: str, text: str = "") -> str:
+        raise GoogleError(
+            "Starting new chats isn't supported for Google Chat yet.")
+
+    def list_chat_messages(self, chat_id: str, *, limit: int = 30) -> list[dict]:
+        return self.list_chat_messages_page(chat_id, limit=limit)[0]
+
+    def list_chat_messages_page(self, chat_id: str, *, limit: int = 30,
+                                page_token: str | None = None):
+        """A page of a space's messages, oldest-first within the page.
+
+        Returns ``(messages, next_token)``; ``next_token`` fetches the *older*
+        page above the current one."""
+        query = {"pageSize": limit, "orderBy": "createTime desc"}
+        if page_token:
+            query["pageToken"] = page_token
+        params = urllib.parse.urlencode(query)
+        data = self._get(f"{CHAT}/{chat_id}/messages?{params}", SCOPES_CHAT)
+        out = [self._chat_message_row(m) for m in data.get("messages", [])]
+        out.reverse()
+        return out, data.get("nextPageToken")
+
+    @staticmethod
+    def _chat_message_row(m: dict) -> dict:
+        sender = m.get("sender") or {}
+        attachments = [
+            {"name": a.get("contentName") or "attachment",
+             "url": a.get("downloadUri") or a.get("thumbnailUri") or "",
+             "content_type": a.get("contentType", "")}
+            for a in (m.get("attachment") or [])
+        ]
+        return {
+            "id": m.get("name", ""),
+            "text": m.get("text", "") or m.get("formattedText", ""),
+            "from": html.unescape(sender.get("displayName", "") or ""),
+            "sent": m.get("createTime", ""),
+            # User-auth Chat API doesn't expose our own user id for comparison.
+            "is_mine": False,
+            "attachments": attachments,
+        }
+
+    def send_chat_message(self, chat_id: str, text: str) -> dict:
+        return self._post(f"{CHAT}/{chat_id}/messages", {"text": text}, SCOPES_CHAT)
+
+    def fetch_bytes(self, url: str) -> bytes:
+        """Download an attachment (with the bearer token) for inline display."""
+        token = self._token_provider(SCOPES_CHAT)
+        if not token:
+            raise GoogleError("not signed in (no token for the requested scopes)")
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return resp.read()
+
+    def send_chat_image(self, chat_id: str, image: bytes,
+                        content_type: str = "image/png", text: str = "") -> dict:
+        raise GoogleError("Sending images isn't supported for Google Chat yet.")
+
+    def send_chat_images(self, chat_id: str, images, text: str = "") -> dict:
+        raise GoogleError("Sending images isn't supported for Google Chat yet.")
+
+    def delete_chat_message(self, chat_id: str, message_id: str) -> None:
+        self._delete(f"{CHAT}/{message_id}", SCOPES_CHAT)
+
+    def edit_chat_message(self, chat_id: str, message_id: str, text: str) -> None:
+        self._patch(f"{CHAT}/{message_id}", {"text": text}, SCOPES_CHAT)
+
+    def list_chat_members(self, chat_id: str) -> list[dict]:
+        return []  # Google Chat @mentions aren't wired yet
+
+    def send_chat_html(self, chat_id: str, content_html: str,
+                      mentions=None, images=None) -> dict:
+        raise GoogleError("Rich messages aren't supported for Google Chat yet.")
+
+    def search_messages(self, query: str, *, limit: int = 25) -> list[dict]:
+        return []  # no cross-space message search wired for Google Chat
+
+    def set_reaction(self, chat_id: str, message_id: str, emoji: str) -> None:
+        raise GoogleError("Reactions aren't supported for Google Chat yet.")
+
+    def unset_reaction(self, chat_id: str, message_id: str, emoji: str) -> None:
+        raise GoogleError("Reactions aren't supported for Google Chat yet.")
+
+    # -- presence / read state / group management -------------------------
+    # Google Chat exposes none of these to the user-auth REST API in a way that
+    # maps onto the Teams model, so they degrade quietly (the view treats an
+    # empty presence map as "unknown" and hides the group-management UI).
+    def get_presences(self, user_ids) -> dict:
+        return {}
+
+    def mark_chat_read(self, chat_id: str) -> None:
+        return None  # no-op; Chat API has no per-space read marker we can set
+
+    def start_group_chat(self, recipients, topic: str = "",
+                         text: str = "") -> str:
+        raise GoogleError("Starting group chats isn't supported for Google Chat yet.")
+
+    def add_chat_member(self, chat_id: str, recipient: str,
+                        share_history: bool = True) -> None:
+        raise GoogleError("Managing members isn't supported for Google Chat yet.")
+
+    def remove_chat_member(self, chat_id: str, membership_id: str) -> None:
+        raise GoogleError("Managing members isn't supported for Google Chat yet.")
+
+    def rename_chat(self, chat_id: str, topic: str) -> None:
+        raise GoogleError("Renaming chats isn't supported for Google Chat yet.")

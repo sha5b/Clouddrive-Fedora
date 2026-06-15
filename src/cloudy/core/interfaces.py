@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import enum
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 
@@ -76,7 +76,7 @@ class ModuleContext:
 
 
 #: Ordered capability keys. The UI maps these to translated labels and icons.
-CAPABILITY_KEYS = ("files", "mail", "calendar")
+CAPABILITY_KEYS = ("files", "mail", "calendar", "chat")
 
 
 def capabilities_of(obj) -> list[str]:
@@ -88,6 +88,8 @@ def capabilities_of(obj) -> list[str]:
         caps.append("mail")
     if isinstance(obj, CalendarCapability):
         caps.append("calendar")
+    if isinstance(obj, ChatCapability):
+        caps.append("chat")
     return caps
 
 
@@ -120,4 +122,26 @@ class CalendarCapability(ABC):
 
     @abstractmethod
     def list_events(self, calendar_id: str, start, end) -> list:
+        ...
+
+
+class ChatCapability(ABC):
+    """Real-time conversations (Teams chats / Google Chat spaces).
+
+    Normalized dict shapes shared by the provider clients::
+
+        chat:    {id, name, kind, preview, last_at}
+        message: {id, text, from, sent, is_mine, attachments}
+    """
+
+    @abstractmethod
+    def list_chats(self) -> list:
+        ...
+
+    @abstractmethod
+    def list_chat_messages(self, chat_id: str, *, limit: int = 30) -> list:
+        ...
+
+    @abstractmethod
+    def send_chat_message(self, chat_id: str, text: str):
         ...

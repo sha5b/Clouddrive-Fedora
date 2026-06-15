@@ -6,6 +6,7 @@ from gettext import gettext as _
 
 from ...core.interfaces import (
     CalendarCapability,
+    ChatCapability,
     FilesCapability,
     MailCapability,
     ModuleContext,
@@ -15,7 +16,9 @@ from ...core.interfaces import (
 )
 
 
-class GmailModule(ServiceModule, FilesCapability, MailCapability, CalendarCapability):
+class GmailModule(
+    ServiceModule, FilesCapability, MailCapability, CalendarCapability, ChatCapability
+):
     id = "gmail"
     name = _("Gmail")
     icon_name = "mail-unread-symbolic"
@@ -50,6 +53,17 @@ class GmailModule(ServiceModule, FilesCapability, MailCapability, CalendarCapabi
 
     def list_events(self, calendar_id: str, start, end) -> list:
         return []
+
+    # ChatCapability — Google Chat (Workspace only). The view talks to
+    # GoogleClient via build_account_client; these satisfy the interface.
+    def list_chats(self) -> list:
+        return []
+
+    def list_chat_messages(self, chat_id: str, *, limit: int = 30) -> list:
+        return []
+
+    def send_chat_message(self, chat_id: str, text: str):
+        return None
 
 
 MODULE = GmailModule

@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 from gettext import gettext as _
 
-from gi.repository import Adw, Gtk, Pango
+from gi.repository import Adw, Gdk, GLib, Gtk, Pango
 
 from .format import esc, sender_name, short_time
 from .source_nav import (
@@ -45,11 +45,15 @@ class MailView(Adw.Bin):
         super().__init__()
         self._window = window
         self._account = account
-        # Microsoft accounts get three sources: Me / Teams / Shared. Google only
-        # has its own mailbox ("me").
-        self._is_ms = account.provider == "microsoft"
+        # Work/school Microsoft accounts get three sources: Me / Teams / Shared.
+        # Google and *personal* Microsoft accounts (no Teams/SharePoint/shared
+        # mailboxes) only have their own mailbox ("me").
+        self._is_ms = account.provider == "microsoft" and not account.is_personal
         self._source = "me"
-        self._folder_id = "INBOX" if account.provider == "google" else "inbox"
+        self._inbox_id = "INBOX" if account.provider == "google" else "inbox"
+        # Start on the remembered folder for this account (survives account
+        # switches), else the Inbox.
+        self._folder_id = window.last_mail_folder(account.id) or self._inbox_id
         self._me_folders: list[dict] = []
         self._teams: list[dict] = []          # [{id, name}] (raw group ids)
         self._shared_folders: dict = {}        # address -> [folders]
@@ -57,6 +61,10 @@ class MailView(Adw.Bin):
         self._open_mid = None
         self._messages_by_id: dict = {}
         self._rows_by_id: dict = {}
+        self._next_token = None   # pagination cursor for the active folder
+        self._more_row = None     # the "Load older" list row, when present
+        self._loading_more = False
+        self._query = ""          # mail search filter (matches loaded messages)
 
         # -- left pane: source tabs + context/folder dropdowns + list ----
         self._ctx_dd = Gtk.DropDown(model=Gtk.StringList.new([]), tooltip_text=_("Choose"))
@@ -79,13 +87,46 @@ class MailView(Adw.Bin):
         self._star_btn.connect("clicked", self._on_star_clicked)
         self._ctx_current = None  # {"id", "name"} of the selected team/shared source
 
-        self._list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.SINGLE,
+        self._list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.MULTIPLE,
                                  valign=Gtk.Align.START)
         self._list.add_css_class("navigation-sidebar")
         self._list.connect("row-activated", self._on_row_activated)
+        # Outlook-style: ↑/↓ and ←/→ move + open in the reader; Shift+arrow or
+        # Ctrl/Shift-click multi-selects; Delete trashes the selection; Ctrl+R
+        # replies, Ctrl+N composes.
+        self._list.connect("selected-rows-changed", self._on_selection_changed)
+        self._list.set_filter_func(self._filter_row)
+        keys = Gtk.EventControllerKey()
+        keys.connect("key-pressed", self._on_list_key)
+        self._list.add_controller(keys)
         list_scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER,
                                          vexpand=True)
         list_scroll.set_child(self._list)
+        # A plain click should select exactly one message (and clicking empty
+        # space deselects); only Shift/Ctrl multi-selects. GtkListBox MULTIPLE
+        # mode otherwise lets clicks accumulate, so on a bare primary press we
+        # clear the selection (capture phase, before the listbox re-selects the
+        # clicked row). A GestureClick only fires on button press — NOT on every
+        # motion/scroll event — and DENIED lets selection proceed normally.
+        click_capture = Gtk.GestureClick(button=Gdk.BUTTON_PRIMARY)
+        click_capture.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        click_capture.connect("pressed", self._on_list_pressed)
+        list_scroll.add_controller(click_capture)
+        # Auto-load older messages when scrolled near the end (no button press).
+        list_scroll.get_vadjustment().connect("value-changed", self._on_list_scrolled)
+        # Floating "go to latest" button (newest mail is at the top), shown only
+        # once the list is scrolled down a screenful.
+        self._to_top_btn = Gtk.Button(
+            icon_name="go-top-symbolic", tooltip_text=_("Go to latest"),
+            halign=Gtk.Align.END, valign=Gtk.Align.END,
+            margin_end=14, margin_bottom=14, visible=False)
+        self._to_top_btn.add_css_class("circular")
+        self._to_top_btn.add_css_class("osd")
+        self._to_top_btn.connect("clicked", self._on_go_latest)
+        self._list_overlay = Gtk.Overlay()
+        self._list_overlay.set_child(list_scroll)
+        self._list_overlay.add_overlay(self._to_top_btn)
+        self._list_scroll = list_scroll
 
         compose_btn = Gtk.Button(
             icon_name="mail-message-new-symbolic", tooltip_text=_("New message"))
@@ -112,7 +153,13 @@ class MailView(Adw.Bin):
                 title_widget=self._folder_dd)
             header.pack_start(compose_btn)
             sidebar_tb.add_top_bar(header)
-        sidebar_tb.set_content(list_scroll)
+        self._search = Gtk.SearchEntry(placeholder_text=_("Search mail…"), hexpand=True)
+        self._search.connect("search-changed", self._on_search_changed)
+        search_bar = Gtk.Box(margin_top=6, margin_bottom=6,
+                            margin_start=10, margin_end=10)
+        search_bar.append(self._search)
+        sidebar_tb.add_top_bar(search_bar)
+        sidebar_tb.set_content(self._list_overlay)
         sidebar_page = Adw.NavigationPage(title=_("Mail"), tag="messages")
         sidebar_page.set_child(sidebar_tb)
 
@@ -165,6 +212,7 @@ class MailView(Adw.Bin):
     def _show_cached_or_placeholder(self) -> bool:
         """Render cached messages if any; return True if they were fresh."""
         self._has_data = False
+        self._next_token = None  # unknown until a live fetch returns the cursor
         cached = self._window.get_application().cache.get(self._cache_key())
         if cached is not None:
             self._render(cached[0])  # show cached instantly
@@ -317,6 +365,19 @@ class MailView(Adw.Bin):
         self._update_star()
 
     def _populate_folders(self, folders, *, initial: bool = False) -> None:
+        # The "Me" mailbox leads with Inbox, then an "Unread" virtual folder
+        # (the inbox filtered to unread), then the remaining folders.
+        if self._source == "me":
+            # Identify the inbox by its locale-independent well-known name (the
+            # Graph id is opaque) or, for Gmail, by its "INBOX" label id.
+            inbox = next(
+                (f for f in folders
+                 if (f.get("well_known") or "") == "inbox"
+                 or str(f.get("id", "")).lower() == self._inbox_id.lower()), None)
+            inbox_unread = inbox.get("unread", 0) if inbox else 0
+            unread_folder = {"id": "unread", "name": _("Unread"), "unread": inbox_unread}
+            rest = [f for f in folders if f is not inbox]
+            folders = ([inbox] if inbox else []) + [unread_folder] + rest
         self._folder_items = folders
         self._suppress = True
         self._folder_dd.set_model(
@@ -378,22 +439,32 @@ class MailView(Adw.Bin):
 
     def _select_folder(self, fid) -> None:
         self._folder_id = fid
-        if not self._show_cached_or_placeholder():
-            self._load_async()
+        if self._source == "me":  # remember the Me-mailbox folder per account
+            self._window.remember_mail_folder(self._account.id, fid)
+        # Always revalidate (even on a fresh cache) so the pagination cursor for
+        # this folder is populated and the "Load older" row can appear.
+        self._show_cached_or_placeholder()
+        self._load_async()
+        self._list.invalidate_filter()  # apply/clear the Unread filter
 
     # -- loading ----------------------------------------------------------
+    def _fetch_folder(self) -> str:
+        """The real folder to hit — the inbox for the "Unread" virtual folder."""
+        return self._inbox_id if self._folder_id == "unread" else self._folder_id
+
     def _load_async(self) -> None:
-        folder_id = self._folder_id
+        folder_id = self._folder_id  # logical (may be "unread")
+        fetch = self._fetch_folder()
 
         def work():
             from .clients import build_account_client
 
             client = build_account_client(self._window.get_application(), self._account)
-            return client.list_messages(folder_id)
+            return client.list_messages_page(fetch)
 
-        run_async(work, lambda messages, error: self._on_loaded(folder_id, messages, error))
+        run_async(work, lambda result, error: self._on_loaded(folder_id, result, error))
 
-    def _on_loaded(self, folder_id, messages, error) -> bool:
+    def _on_loaded(self, folder_id, result, error) -> bool:
         if error:
             # Never cache errors; keep any cached list on screen and only
             # surface the error if the active folder has nothing to show.
@@ -403,18 +474,21 @@ class MailView(Adw.Bin):
                 else:
                     self._set_placeholder(_("Couldn't load mail: %s") % error)
             return False
+        messages, next_token = result
         self._window.get_application().cache.set(
             f"{self._account.id}:messages:{folder_id}", messages
         )
         # A late response for a folder the user already switched away from just
         # updates the cache; don't clobber the visible list.
         if folder_id == self._folder_id:
+            self._next_token = next_token
             self._render(messages)
         return False
 
     def _render(self, messages) -> None:
         self._messages_by_id = {}
         self._rows_by_id = {}
+        self._more_row = None  # dropped by _clear(); rebuilt by _sync_more_row()
         if not messages:
             self._set_placeholder(_("This folder is empty."))
             self._has_data = False
@@ -426,6 +500,117 @@ class MailView(Adw.Bin):
             self._messages_by_id[msg["id"]] = msg
             self._rows_by_id[msg["id"]] = row
         self._has_data = True
+        self._sync_more_row()
+
+    # -- pagination ("Load older messages") -------------------------------
+    def _sync_more_row(self) -> None:
+        """Add/remove the trailing "Load older" row to match the cursor."""
+        if self._more_row is not None:
+            self._list.remove(self._more_row)
+            self._more_row = None
+        if self._next_token:
+            self._more_row = self._make_more_row()
+            self._list.append(self._more_row)
+
+    def _make_more_row(self) -> Gtk.ListBoxRow:
+        row = Gtk.ListBoxRow(activatable=True, selectable=False)
+        row._more = True
+        label = _("Loading…") if self._loading_more else _("Load older messages")
+        lbl = Gtk.Label(label=label, margin_top=10, margin_bottom=10)
+        lbl.add_css_class("dim-label")
+        row.set_child(lbl)
+        return row
+
+    def _load_more(self) -> None:
+        token = self._next_token
+        logical = self._folder_id
+        fetch = self._fetch_folder()
+        if not token or self._loading_more:
+            return
+        self._loading_more = True
+        if self._more_row is not None:  # reflect the spinner-y state
+            idx = self._more_row.get_index()
+            self._list.remove(self._more_row)
+            self._more_row = self._make_more_row()
+            self._list.insert(self._more_row, idx)
+
+        def work():
+            from .clients import build_account_client
+
+            client = build_account_client(self._window.get_application(), self._account)
+            return client.list_messages_page(fetch, page_token=token)
+
+        run_async(work, lambda result, error: self._on_more(logical, result, error))
+
+    def _on_more(self, folder, result, error) -> bool:
+        self._loading_more = False
+        if error or folder != self._folder_id:
+            self._sync_more_row()  # restore the button (drop the loading state)
+            if error:
+                self._window.add_toast(_("Couldn't load more: %s") % error)
+            return False
+        messages, next_token = result
+        self._next_token = next_token
+        # Append to the visible list and extend the cached page.
+        cache = self._window.get_application().cache
+        cached = cache.get(self._cache_key())
+        base = list(cached[0]) if cached else []
+        existing = {m.get("id") for m in base}
+        new = [m for m in messages if m.get("id") not in existing]
+        cache.set(self._cache_key(), base + new)
+        if self._more_row is not None:
+            self._list.remove(self._more_row)
+            self._more_row = None
+        for msg in new:
+            row = self._mail_row(msg)
+            self._list.append(row)
+            self._messages_by_id[msg["id"]] = msg
+            self._rows_by_id[msg["id"]] = row
+        self._sync_more_row()
+        return False
+
+    # -- keyboard shortcuts (Outlook-style) -------------------------------
+    def _on_list_key(self, _ctrl, keyval, _code, state) -> bool:
+        ctrl = bool(state & Gdk.ModifierType.CONTROL_MASK)
+        shift = bool(state & Gdk.ModifierType.SHIFT_MASK)
+        if keyval in (Gdk.KEY_Up, Gdk.KEY_Left):
+            self._nav(-1, extend=shift)
+            return True
+        if keyval in (Gdk.KEY_Down, Gdk.KEY_Right):
+            self._nav(+1, extend=shift)
+            return True
+        if keyval in (Gdk.KEY_Delete, Gdk.KEY_KP_Delete):
+            self._on_delete_clicked(None)
+            return True
+        if ctrl and keyval == Gdk.KEY_a:  # select all messages
+            for row in self._message_rows():
+                self._list.select_row(row)
+            return True
+        if ctrl and keyval == Gdk.KEY_r and self._open_mid:
+            self._on_reply_clicked(None)
+            return True
+        if ctrl and keyval == Gdk.KEY_n:
+            self._on_compose_clicked(None)
+            return True
+        return False
+
+    # -- search (filter the loaded messages) ------------------------------
+    def _on_search_changed(self, entry) -> None:
+        self._query = entry.get_text().strip().lower()
+        self._list.invalidate_filter()
+
+    def _filter_row(self, row) -> bool:
+        unread_only = self._folder_id == "unread"
+        search = getattr(row, "_search", None)
+        if search is None:  # non-message rows
+            if getattr(row, "_more", False):
+                return not self._query  # keep "Load older" (also in Unread view)
+            return not (self._query or unread_only)  # hide placeholders while filtering
+        if unread_only and not getattr(row, "_unread", False):
+            return False
+        if self._query and self._query not in search:
+            return False
+        return True
 
     def _refresh_row(self, mid, msg) -> None:
         """Rebuild a single row in place (e.g. after marking it read)."""
@@ -450,6 +635,8 @@ class MailView(Adw.Bin):
 
         row = Gtk.ListBoxRow(activatable=True)
         row._mid = msg["id"]
+        row._search = f"{sender} {subject} {preview}".lower()
+        row._unread = unread
 
         hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10,
                        margin_top=8, margin_bottom=8, margin_start=12, margin_end=12)
@@ -500,14 +687,78 @@ class MailView(Adw.Bin):
         return row
 
     # -- open a message into the reading pane -----------------------------
+    def _on_list_scrolled(self, adj) -> None:
+        if (self._next_token and not self._loading_more
+                and adj.get_value() >= adj.get_upper() - adj.get_page_size() - 300):
+            self._load_more()
+        # Offer a jump back to the newest (top) once scrolled down a screenful.
+        self._to_top_btn.set_visible(adj.get_value() > adj.get_page_size())
+
+    def _on_go_latest(self, _btn) -> None:
+        self._list_scroll.get_vadjustment().set_value(0)
+        self._to_top_btn.set_visible(False)
+
+    def _on_list_pressed(self, gesture, _n_press, _x, _y) -> None:
+        mods = gesture.get_current_event_state()
+        if mods & (Gdk.ModifierType.SHIFT_MASK | Gdk.ModifierType.CONTROL_MASK):
+            gesture.set_state(Gtk.EventSequenceState.DENIED)
+            return  # let Shift/Ctrl extend the selection
+        # Bare click: drop the current selection (the listbox then selects the
+        # clicked row, or nothing when the click lands on empty space). DENIED
+        # so this gesture doesn't consume the press — the listbox still selects.
+        self._list.unselect_all()
+        gesture.set_state(Gtk.EventSequenceState.DENIED)
+
     def _on_row_activated(self, _list, row) -> None:
+        if getattr(row, "_more", False):
+            self._load_more()
+            return
         mid = getattr(row, "_mid", None)
         if mid is not None:
-            self.open_message(mid)
+            self.open_message(mid)  # guarded; a re-click just reveals the reader
+
+    def _on_selection_changed(self, _list) -> None:
+        # Open in the reader when exactly one message is selected; a multi-row
+        # selection (Shift/Ctrl) keeps the current reader for batch actions.
+        sel = self._selected_mids()
+        if len(sel) == 1 and sel[0] != self._open_mid:
+            self.open_message(sel[0])
+        self._delete_btn.set_sensitive(bool(sel) or bool(self._open_mid))
+
+    def _selected_mids(self) -> list:
+        return [r._mid for r in self._list.get_selected_rows()
+                if getattr(r, "_mid", None) is not None]
+
+    def _message_rows(self) -> list:
+        rows = []
+        child = self._list.get_first_child()
+        while child is not None:
+            if getattr(child, "_mid", None) is not None:
+                rows.append(child)
+            child = child.get_next_sibling()
+        return rows
+
+    def _nav(self, delta: int, *, extend: bool = False) -> None:
+        rows = self._message_rows()
+        if not rows:
+            return
+        sel = [r for r in self._list.get_selected_rows() if r in rows]
+        if not sel:
+            target = rows[0]
+        else:
+            cur = rows.index(sel[-1])
+            target = rows[max(0, min(len(rows) - 1, cur + delta))]
+        if not extend:
+            self._list.unselect_all()
+        self._list.select_row(target)
+        target.grab_focus()  # scrolls the row into view
 
     def open_message(self, mid) -> None:
         """Open a message in the reading pane (also used to deep-link from the
         dashboard). Selects its list row when that row is present."""
+        if mid == self._open_mid:
+            self._split.set_show_content(True)  # already open; just reveal it
+            return
         self._open_mid = mid
         # Group conversations are read-only (no per-user delete).
         self._delete_btn.set_sensitive(not str(mid).startswith("group:"))
@@ -516,7 +767,8 @@ class MailView(Adw.Bin):
         self._split.set_show_content(True)  # reveal the reader when collapsed
 
         row = self._rows_by_id.get(mid)
-        if row is not None and self._list.get_selected_row() is not row:
+        if row is not None and row not in self._list.get_selected_rows():
+            self._list.unselect_all()
             self._list.select_row(row)
 
         def work():
@@ -537,11 +789,68 @@ class MailView(Adw.Bin):
             return False
         from .message_view import build_message_content
 
-        self._reader.set_child(build_message_content(msg))
+        self._reader.set_child(
+            build_message_content(msg, on_open_attachment=self._open_attachment))
         self._open_msg = msg
         self._reply_btn.set_sensitive(True)
         self._mark_read(mid)
         return False
+
+    # -- attachments ------------------------------------------------------
+    def _open_attachment(self, att) -> None:
+        """Fetch an attachment's bytes, then open images in a viewer window and
+        offer to save everything else."""
+        mid = self._open_mid
+        if not mid or not att.get("id"):
+            return
+        name = att.get("name") or _("attachment")
+        self._window.add_toast(_("Opening %s…") % name)
+
+        def work():
+            from .clients import build_account_client
+
+            client = build_account_client(self._window.get_application(), self._account)
+            return client.fetch_mail_attachment(mid, att["id"])
+
+        run_async(work, lambda data, err: self._on_attachment(att, data, err))
+
+    def _on_attachment(self, att, data, error) -> bool:
+        if error or not data:
+            self._window.add_toast(_("Couldn't open attachment: %s")
+                                   % (error or _("no data")))
+            return False
+        name = att.get("name") or _("attachment")
+        if (att.get("content_type") or "").lower().startswith("image"):
+            from .media_window import ImageWindow
+
+            ImageWindow(self._window, data, name).present()
+        else:
+            self._save_attachment(data, name)
+        return False
+
+    def _save_attachment(self, data, name) -> None:
+        from .source_nav import local_initial_folder
+
+        dialog = Gtk.FileDialog(title=_("Save"), initial_name=name)
+        folder = local_initial_folder()
+        if folder is not None:
+            dialog.set_initial_folder(folder)
+        dialog.save(self._window, None, lambda d, r: self._on_save_attachment(d, r, data))
+
+    def _on_save_attachment(self, dialog, result, data) -> None:
+        try:
+            gfile = dialog.save_finish(result)
+        except GLib.Error:
+            return
+        if gfile is None:
+            return
+        try:
+            from gi.repository import Gio
+
+            gfile.replace_contents(data, None, False, Gio.FileCreateFlags.NONE, None)
+            self._window.add_toast(_("Saved"))
+        except GLib.Error as exc:
+            self._window.add_toast(_("Couldn't save: %s") % exc.message)
 
     # -- compose / reply --------------------------------------------------
     def _send_context(self):
@@ -564,12 +873,14 @@ class MailView(Adw.Bin):
 
         source, address = self._send_context()
 
-        def send(to, subject, body):
+        def send(to, subject, body, *, cc=None, bcc=None,
+                 attachments=None, importance="normal"):
             from .clients import build_account_client
 
             client = build_account_client(self._window.get_application(), self._account)
             client.send_mail(to=to, subject=subject, body=body,
-                             source=source, address=address)
+                             source=source, address=address, cc=cc, bcc=bcc,
+                             html=True, attachments=attachments, importance=importance)
 
         ComposeWindow(self._window, self._account, from_label=self._from_label(),
                       send_fn=send).present()
@@ -585,11 +896,12 @@ class MailView(Adw.Bin):
         if subject and not subject.lower().startswith("re:"):
             subject = _("Re: %s") % subject
 
-        def send(_to, _subject, body):
+        def send(_to, _subject, body, *, cc=None, bcc=None,
+                 attachments=None, importance="normal"):
             from .clients import build_account_client
 
             client = build_account_client(self._window.get_application(), self._account)
-            client.reply_mail(mid, body)
+            client.reply_mail(mid, body, html=True, attachments=attachments)
 
         ComposeWindow(
             self._window, self._account, from_label=self._account.display_name,
@@ -614,22 +926,33 @@ class MailView(Adw.Bin):
         # Best-effort (e.g. Gmail not re-consented): ignore the outcome.
         run_async(work, lambda _r, _e: False)
 
-    def _on_delete_clicked(self, _btn) -> None:
-        mid = self._open_mid
-        if not mid:
+    def _on_delete_clicked(self, _btn=None) -> None:
+        # Delete the whole selection (multi-select), or the open message if
+        # nothing is selected. Group conversations can't be deleted — skip them.
+        mids = [m for m in (self._selected_mids() or
+                            ([self._open_mid] if self._open_mid else []))
+                if m and not str(m).startswith("group:")]
+        if not mids:
             return
-        # Optimistic: drop the row + clear the reader, then hit the server.
-        row = self._rows_by_id.pop(mid, None)
-        self._messages_by_id.pop(mid, None)
-        if row is not None:
-            self._list.remove(row)
+        for mid in mids:
+            self._delete_message(mid)
         self._open_mid = None
         self._delete_btn.set_sensitive(False)
         self._reader.set_child(self._reader_placeholder(
             "user-trash-symbolic", _("Moved to Trash"),
-            _("The message was moved to Trash."),
+            _("%d messages moved to Trash.") % len(mids) if len(mids) > 1
+            else _("The message was moved to Trash."),
         ))
-        self._window.add_toast(_("Moved to Trash"))
+        self._window.add_toast(
+            _("Moved %d to Trash") % len(mids) if len(mids) > 1
+            else _("Moved to Trash"))
+
+    def _delete_message(self, mid) -> None:
+        """Optimistically drop a message's row and delete it on the server."""
+        row = self._rows_by_id.pop(mid, None)
+        self._messages_by_id.pop(mid, None)
+        if row is not None:
+            self._list.remove(row)
 
         def work():
             from .clients import build_account_client

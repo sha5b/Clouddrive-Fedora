@@ -14,7 +14,7 @@ import html
 import re
 from gettext import gettext as _
 
-from gi.repository import Adw, Gtk
+from gi.repository import Adw, Gtk, Pango
 
 from .format import sender_name, short_time
 
@@ -47,17 +47,68 @@ _PAGE_BG = "#ffffff"
 
 
 _CID_IMG_RE = re.compile(r"<img\b[^>]*\bsrc\s*=\s*[\"']cid:[^>]*>", re.IGNORECASE)
+_CID_SRC_RE = re.compile(r"""src\s*=\s*["']cid:([^"']+)["']""", re.IGNORECASE)
 
 
-def _wrap_html(content: str, is_html: bool) -> str:
+_INLINE_MAX_EDGE = 1400  # downscale inline images past this (longest edge)
+
+
+def _shrink_inline(b64: str, content_type: str):
+    """Downscale an over-large inline image so the WebView stays smooth to
+    scroll (full-resolution screenshots embedded as data URIs make it crawl).
+    Returns ``(b64, content_type)`` unchanged if it's already small or on any
+    decode/encode error."""
+    import base64
+
+    try:
+        from gi.repository import GdkPixbuf
+
+        loader = GdkPixbuf.PixbufLoader()
+        loader.write(base64.b64decode(b64))
+        loader.close()
+        pix = loader.get_pixbuf()
+        w, h = pix.get_width(), pix.get_height()
+        scale = min(1.0, _INLINE_MAX_EDGE / w, _INLINE_MAX_EDGE / h)
+        if scale >= 1.0:
+            return b64, content_type
+        pix = pix.scale_simple(max(1, int(w * scale)), max(1, int(h * scale)),
+                               GdkPixbuf.InterpType.BILINEAR)
+        ok, buf = pix.save_to_bufferv("png", [], [])
+        if ok:
+            return base64.b64encode(buf).decode(), "image/png"
+    except Exception:  # noqa: BLE001 - undecodable → keep the original
+        pass
+    return b64, content_type
+
+
+def _resolve_cids(content: str, inline_images) -> str:
+    """Replace ``src="cid:…"`` references with inline ``data:`` URIs built from
+    the message's inline attachments (contentId match, ``<>`` tolerated)."""
+    uris = {}
+    for img in inline_images or []:
+        cid = (img.get("content_id") or "").strip().strip("<>")
+        if cid and img.get("content_bytes"):
+            b64, ctype = _shrink_inline(
+                img["content_bytes"], img.get("content_type") or "image/png")
+            uris[cid] = f"data:{ctype};base64,{b64}"
+
+    def repl(match):
+        uri = uris.get(match.group(1).strip().strip("<>"))
+        return f'src="{uri}"' if uri else match.group(0)
+
+    return _CID_SRC_RE.sub(repl, content)
+
+
+def _wrap_html(content: str, is_html: bool, inline_images=None) -> str:
     """Wrap a message body in a minimal HTML document on a light page."""
     fg, bg, link, quote = "#1a1a1a", _PAGE_BG, "#1a73e8", "#5e5c64"
 
     if is_html:
-        # Drop inline (cid:) images — they reference mail attachments we don't
-        # fetch, so they'd render as broken-image "?" placeholders (common in
-        # Outlook/Teams meeting invites). http(s) images still load normally.
-        body = _CID_IMG_RE.sub("", content)
+        # Resolve inline (cid:) images to data URIs so they render; any cid
+        # without a matching attachment is dropped (it'd be a broken "?" — common
+        # in Outlook/Teams meeting invites). http(s) images load normally.
+        body = _resolve_cids(content, inline_images)
+        body = _CID_IMG_RE.sub("", body)
     else:
         body = "<pre>%s</pre>" % html.escape(content)
 
@@ -81,16 +132,19 @@ def _wrap_html(content: str, is_html: bool) -> str:
 
 def _body_widget(msg: dict) -> Gtk.Widget:
     body = msg.get("body", "") or ""
+    inline = msg.get("inline_images") or []
+    has_images = bool(inline) or "<img" in body.lower()
     # Some messages (notably Microsoft meeting accept/decline notifications)
     # carry no body at all — fall back to the server preview, then to a clear
-    # placeholder, rather than rendering a blank white page.
-    if not _to_text(body).strip():
+    # placeholder, rather than rendering a blank white page. An image-only body
+    # is NOT empty (its text strips to "" but the pictures are the content).
+    if not _to_text(body).strip() and not has_images:
         if msg.get("meeting_response"):
             return _meeting_response_card(msg)
         preview = (msg.get("preview") or "").strip()
         if preview:
             return html_body_widget(preview, False)
-    return html_body_widget(body, msg.get("body_html", False))
+    return html_body_widget(body, msg.get("body_html", False), inline)
 
 
 def _meeting_response_card(msg: dict) -> Gtk.Widget:
@@ -124,14 +178,16 @@ def _meeting_response_card(msg: dict) -> Gtk.Widget:
     return box
 
 
-def html_body_widget(content: str, is_html: bool) -> Gtk.Widget:
+def html_body_widget(content: str, is_html: bool, inline_images=None) -> Gtk.Widget:
     """A WebKit view of an HTML/plain body (links open externally), or a
     plain-text label fallback if WebKitGTK isn't available. Reused by the mail
     reader and the calendar event detail."""
     content = content or ""
     # Empty body → a clear placeholder instead of a blank white page (covers
-    # meeting notifications and any content-less message/event).
-    if not _to_text(content).strip():
+    # meeting notifications and any content-less message/event). Inline images
+    # count as content even though their text strips to "".
+    has_images = bool(inline_images) or "<img" in content.lower()
+    if not _to_text(content).strip() and not has_images:
         return _empty_placeholder()
     from ..core.gi_compat import require
 
@@ -172,7 +228,7 @@ def html_body_widget(content: str, is_html: bool) -> Gtk.Widget:
         return False
 
     view.connect("decide-policy", _on_decide)
-    view.load_html(_wrap_html(content, is_html), None)
+    view.load_html(_wrap_html(content, is_html, inline_images), None)
     return view
 
 
@@ -197,11 +253,34 @@ def _text_fallback(content: str) -> Gtk.Widget:
     return scrolled
 
 
+def _attachments_bar(attachments, on_open) -> Gtk.Widget:
+    """A wrapping row of attachment chips; clicking one calls ``on_open(att)``."""
+    flow = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE,
+                       max_children_per_line=4, column_spacing=6, row_spacing=6,
+                       margin_top=8, margin_bottom=8, margin_start=20, margin_end=20)
+    for att in attachments:
+        chip = Gtk.Button()
+        chip.add_css_class("card")
+        inner = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6,
+                        margin_top=4, margin_bottom=4, margin_start=8, margin_end=8)
+        icon = ("image-x-generic-symbolic"
+                if (att.get("content_type") or "").lower().startswith("image")
+                else "mail-attachment-symbolic")
+        inner.append(Gtk.Image.new_from_icon_name(icon))
+        inner.append(Gtk.Label(label=att.get("name") or _("attachment"),
+                               ellipsize=Pango.EllipsizeMode.MIDDLE, max_width_chars=24))
+        chip.set_child(inner)
+        chip.connect("clicked", lambda _b, a=att: on_open(a))
+        flow.append(chip)
+    return flow
+
+
 # -- public builders -----------------------------------------------------
-def build_message_content(msg: dict) -> Gtk.Widget:
+def build_message_content(msg: dict, on_open_attachment=None) -> Gtk.Widget:
     """Reader content: a fixed header (subject/sender/date) + the body view.
 
-    Suitable for embedding in a reading pane (two-pane layout) or a page.
+    ``on_open_attachment(att)`` (optional) is called when an attachment chip is
+    clicked; without it, chips are hidden. Suitable for a reading pane or page.
     """
     box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
 
@@ -234,6 +313,10 @@ def build_message_content(msg: dict) -> Gtk.Widget:
         to.add_css_class("caption")
         header.append(to)
 
+    attachments = msg.get("attachments") or []
+    if attachments and on_open_attachment is not None:
+        box.append(Gtk.Separator())
+        box.append(_attachments_bar(attachments, on_open_attachment))
     box.append(Gtk.Separator())
     box.append(_body_widget(msg))
     return box

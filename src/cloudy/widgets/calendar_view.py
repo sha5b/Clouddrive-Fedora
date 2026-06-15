@@ -14,7 +14,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from gettext import gettext as _
 
-from gi.repository import Adw, GLib, Gtk, Pango
+from gi.repository import Adw, Gdk, GLib, Gtk, Pango
 
 from .event_window import EventDetailWindow
 from .month_grid import MonthGrid
@@ -39,7 +39,9 @@ class CalendarView(Adw.Bin):
         super().__init__()
         self._window = window
         self._account = account
-        self._is_ms = account.provider == "microsoft"
+        # Me / Teams / Shared sources are work/school-only; personal Microsoft
+        # accounts (and Google) get just their own calendar.
+        self._is_ms = account.provider == "microsoft" and not account.is_personal
         self._source = "me"
         self._context = None        # group id (teams) or address (shared)
         self._groups = None         # lazily loaded list[{id, name}]
@@ -47,6 +49,7 @@ class CalendarView(Adw.Bin):
         self._suppress = False
         self._events: list = []
         self._has_data = False
+        self._query = ""  # agenda search filter
 
         # -- right pane: month grid (built first; the loader feeds it) ----
         self._grid = MonthGrid(on_event=self._open_event, on_range=self._on_grid_range)
@@ -67,13 +70,22 @@ class CalendarView(Adw.Bin):
         self._star_btn.connect("clicked", self._on_star_clicked)
         self._ctx_current = None  # {"id", "name"} of the selected team/shared source
 
-        self._list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.SINGLE,
+        self._list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.MULTIPLE,
                                  valign=Gtk.Align.START)
         self._list.add_css_class("navigation-sidebar")
         self._list.connect("row-activated", self._on_row_activated)
+        self._list.set_filter_func(self._filter_row)
+        # ←/→ and ↑/↓ move between events; Shift extends; Delete removes the
+        # selection; Enter opens. (Arrows only move — opening spawns a window.)
+        keys = Gtk.EventControllerKey()
+        keys.connect("key-pressed", self._on_list_key)
+        self._list.add_controller(keys)
         list_scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER,
                                          vexpand=True)
         list_scroll.set_child(self._list)
+
+        self._search = Gtk.SearchEntry(placeholder_text=_("Search events…"), hexpand=True)
+        self._search.connect("search-changed", self._on_search_changed)
 
         new_btn = Gtk.Button(
             icon_name="appointment-new-symbolic", tooltip_text=_("New event"))
@@ -101,6 +113,10 @@ class CalendarView(Adw.Bin):
                 title_widget=Gtk.Label(label=_("Agenda")))
             header.pack_start(new_btn)
             sidebar_tb.add_top_bar(header)
+        search_bar = Gtk.Box(margin_top=6, margin_bottom=6,
+                            margin_start=10, margin_end=10)
+        search_bar.append(self._search)
+        sidebar_tb.add_top_bar(search_bar)
         sidebar_tb.set_content(list_scroll)
         sidebar_page = Adw.NavigationPage(title=_("Calendar"), tag="agenda")
         sidebar_page.set_child(sidebar_tb)
@@ -180,6 +196,7 @@ class CalendarView(Adw.Bin):
     def _event_row(self, ev) -> Gtk.ListBoxRow:
         row = Gtk.ListBoxRow(activatable=True)
         row._ev = ev  # type: ignore[attr-defined]
+        row._search = f"{ev.get('subject', '')} {ev.get('location', '')}".lower()
         box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12,
                       margin_top=8, margin_bottom=8, margin_start=12, margin_end=12)
         row.set_child(box)
@@ -192,6 +209,10 @@ class CalendarView(Adw.Bin):
 
         text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, hexpand=True)
         box.append(text)
+        if _is_live(ev):
+            live = Gtk.Label(label=_("● Live now"), xalign=0)
+            live.add_css_class("cloudy-live")
+            text.append(live)
         title = Gtk.Label(label=ev.get("subject") or _("(no title)"), xalign=0,
                           ellipsize=Pango.EllipsizeMode.END)
         title.add_css_class("body")
@@ -203,6 +224,17 @@ class CalendarView(Adw.Bin):
             sub.add_css_class("dim-label")
             text.append(sub)
         return row
+
+    # -- search (filter the agenda) --------------------------------------
+    def _on_search_changed(self, entry) -> None:
+        self._query = entry.get_text().strip().lower()
+        self._list.invalidate_filter()
+
+    def _filter_row(self, row) -> bool:
+        if not self._query:
+            return True
+        text = getattr(row, "_search", None)  # event rows only; hides day headers
+        return text is not None and self._query in text
 
     # -- sources (Me / Teams / Shared) -----------------------------------
     def _shared_addresses(self) -> list:
@@ -368,8 +400,79 @@ class CalendarView(Adw.Bin):
             self._open_event(ev)
 
     def _open_event(self, ev) -> None:
-        EventDetailWindow(self._window, self._account, ev["id"],
+        self.open_event(ev["id"])
+
+    def open_event(self, event_id) -> None:
+        """Open an event in a detail window (also the notification deep-link)."""
+        EventDetailWindow(self._window, self._account, event_id,
                           on_changed=self._reload_current).present()
+
+    # -- keyboard navigation / multi-select ------------------------------
+    def _event_rows(self) -> list:
+        rows = []
+        child = self._list.get_first_child()
+        while child is not None:
+            if getattr(child, "_ev", None) is not None:
+                rows.append(child)
+            child = child.get_next_sibling()
+        return rows
+
+    def _nav(self, delta: int, *, extend: bool = False) -> None:
+        rows = self._event_rows()
+        if not rows:
+            return
+        sel = [r for r in self._list.get_selected_rows() if r in rows]
+        if not sel:
+            target = rows[0]
+        else:
+            cur = rows.index(sel[-1])
+            target = rows[max(0, min(len(rows) - 1, cur + delta))]
+        if not extend:
+            self._list.unselect_all()
+        self._list.select_row(target)
+        target.grab_focus()
+
+    def _on_list_key(self, _ctrl, keyval, _code, state) -> bool:
+        shift = bool(state & Gdk.ModifierType.SHIFT_MASK)
+        if keyval in (Gdk.KEY_Up, Gdk.KEY_Left):
+            self._nav(-1, extend=shift)
+            return True
+        if keyval in (Gdk.KEY_Down, Gdk.KEY_Right):
+            self._nav(+1, extend=shift)
+            return True
+        if keyval in (Gdk.KEY_Delete, Gdk.KEY_KP_Delete):
+            self._delete_selected()
+            return True
+        return False
+
+    def _delete_selected(self) -> None:
+        if self._is_ms and self._source == "teams":
+            self._window.add_toast(_("Team calendars are read-only here."))
+            return
+        rows = [r for r in self._list.get_selected_rows()
+                if getattr(r, "_ev", None) is not None]
+        ids = [r._ev["id"] for r in rows if r._ev.get("id")]
+        if not ids:
+            return
+        for row in rows:  # optimistic removal
+            self._list.remove(row)
+        self._window.add_toast(
+            _("Deleted %d events") % len(ids) if len(ids) > 1 else _("Event deleted"))
+
+        def work():
+            from .clients import build_account_client
+
+            client = build_account_client(self._window.get_application(), self._account)
+            for ev_id in ids:
+                client.delete_event(ev_id)
+
+        run_async(work, lambda _r, error: self._on_deleted(error))
+
+    def _on_deleted(self, error) -> bool:
+        if error:
+            self._window.add_toast(_("Couldn't delete: %s") % error)
+        self._reload_current()  # resync from the server either way
+        return False
 
     def _create_context(self):
         """Return ``(source, address)`` for the calendar to write to."""
@@ -420,6 +523,33 @@ class CalendarView(Adw.Bin):
                 pass
 
         threading.Thread(target=work, daemon=True).start()
+
+
+def _parse_iso(value: str):
+    if not value or "T" not in value:
+        return None
+    txt = value.strip().replace("Z", "+00:00")
+    try:
+        d = datetime.fromisoformat(txt)
+    except ValueError:
+        try:
+            d = datetime.fromisoformat(txt.split(".", 1)[0])
+        except ValueError:
+            return None
+    if d.tzinfo is None:
+        d = d.replace(tzinfo=timezone.utc)
+    return d.astimezone(timezone.utc)
+
+
+def _is_live(ev) -> bool:
+    """True when the event is happening right now (start ≤ now ≤ end)."""
+    if ev.get("all_day"):
+        return False
+    start = _parse_iso(ev.get("start", ""))
+    end = _parse_iso(ev.get("end", ""))
+    if start is None or end is None:
+        return False
+    return start <= datetime.now(timezone.utc) <= end
 
 
 def _time_label(ev) -> str:

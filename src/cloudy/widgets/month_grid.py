@@ -13,7 +13,7 @@ normalized dicts the REST clients return (``start`` ISO, ``subject``,
 from __future__ import annotations
 
 import calendar as _calmod
-from datetime import date, datetime
+from datetime import date
 from gettext import gettext as _
 
 from gi.repository import Gtk, Pango

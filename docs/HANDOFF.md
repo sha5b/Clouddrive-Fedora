@@ -12,7 +12,108 @@ Calendar)** and **Google (Gmail, Calendar, Drive)** on Fedora 44 (GNOME 50). It
 for mail/calendar) rather than reimplementing them. Read `docs/ARCHITECTURE.md`,
 `docs/AUTH.md`, `docs/SECRETS.md`, `docs/ROADMAP.md` for depth.
 
-## ⏭ Continue here — latest session (2026-06-15)
+## ⏭ Continue here — Chat capability + UX session (2026-06-15, later)
+
+A large session that added a **Chat capability** (Teams chats / Google Chat) and
+polished Mail/Calendar. Everything below is shipped and built into the
+RPM + Flatpak (`make release` reinstalls the user Flatpak, so running app ==
+release). Builds + 4 meson tests green; verified by headless widget instantiation
+(see [[cloudy-widget-smoke-test]] pattern in memory).
+
+### New: Chat capability (`widgets/chat_view.py`, `widgets/chat_compose.py`)
+A 4th capability alongside Files/Mail/Calendar. Wired exactly like the others:
+`ChatCapability` in `core/interfaces.py` (+ `"chat"` in `CAPABILITY_KEYS` and
+`capabilities_of`), declared by both `Microsoft365Module` and `GmailModule`,
+`"chat"` in `window.CAPABILITY_UI`, and a `ChatView` branch in
+`window._capability_placeholder`. Clients gained chat methods (see below).
+
+- **Provider scope**: Teams chat works on **work/school** Microsoft accounts only
+  (delegated `Chat.ReadWrite`, unmetered). Google Chat is **Workspace-only**;
+  consumer Gmail has no Chat API → the view degrades to a clear message and most
+  write ops raise a friendly `GoogleError`. **The Chat tab + Teams/Shared mail
+  sources are hidden for *personal* accounts** via `Account.is_personal`
+  (email-domain heuristic) — `window._show_account` drops `"chat"`, and
+  Mail/Calendar set `self._is_ms = provider == microsoft and not is_personal`.
+- **Chat list**: 1:1 / group / **meeting** chats; `Adw.Avatar` initials (calendar
+  glyph for meeting chats); unread = bold name + accent dot (Teams
+  `viewpoint.lastMessageReadDateTime` vs last message, and **never** when the
+  last message is `from_me` or the marker is missing — that was a false-unread
+  bug); "You:" preview prefix; conversational dates (`format.relative_time`:
+  Today→`HH:MM`, Yesterday, weekday, `14 Jun`, date); newest-first; **pagination**
+  ("Load older conversations"); **filter by name** (type) + **server-side message
+  search** (Enter → Graph `/search/query` chatMessage → hit rows open the chat).
+- **Thread**: bubbles (mine right/accent), oldest-first, **older-message
+  pagination** (top button), reliably **pins to bottom** on open (a `changed`
+  re-pin + a real `EventControllerScroll` for user-scroll detection — do NOT use
+  `value-changed`, it races layout and lands mid-thread). Empty/system messages
+  are skipped so a bare timestamp never shows as its own bubble.
+- **Compose**: Enter sends (no send button — removed by request). **Attach button**
+  (paperclip, `Gtk.FileDialog`, images) + **Ctrl+V paste** both *stage* a
+  thumbnail in a strip; caption optional; sent on Enter. Images go as Teams
+  **inline hosted content** (base64) so they render inline both sides. **@mentions**:
+  type `@` → popover of chat members (`list_chat_members`, cached) → inserts
+  `@Name`, recorded; on send builds HTML `<at id>` tags + the `mentions[]` array.
+- **Per-message right-click menu**: emoji **reaction** row (`setReaction`), Reply
+  (inline quote via a context bar), Forward (opens New Chat prefilled), Copy,
+  Edit (own, `PATCH`), Delete (own, `softDelete`). Reactions display as chips
+  under bubbles.
+- **Inline images**: downloaded with the bearer token (hosted-content URLs need
+  auth — a plain open 401s), **downscaled to a 240px thumbnail** (`_thumb_texture`;
+  a `Gtk.Picture`'s natural size = its paintable's, so scale the *pixbuf*, not
+  `set_size_request`). Relative `../hostedContents/..` srcs are resolved to the
+  absolute message URL.
+- **New chat** (`chat_compose.ChatComposeWindow`, an `EditorWindow`): To-field
+  contacts autocomplete; `start_chat` creates/reuses a 1:1 (Teams) then sends.
+- **Notifications**: chat polled alongside mail/calendar (`notifications.py`
+  `_poll_chat`), raises a popup + deep-links via `app.notify-open-chat` →
+  `window.open_chat`. Red **chat unread badge** on the sidebar account row
+  (`notifier._chat_unread`, `chat_unread_count`, `mark_chat_read` cleared on open).
+
+Client chat methods — Graph (`modules/microsoft365/graph.py`) and Google
+(`modules/gmail/google_client.py`), same normalized shapes:
+`list_chats[_page]`, `list_chat_messages[_page]`, `list_chat_members`,
+`send_chat_message`, `send_chat_images`, `send_chat_html`, `fetch_bytes`,
+`edit_chat_message`, `delete_chat_message`, `set_reaction`/`unset_reaction`,
+`start_chat`, `search_messages`. Google raises `GoogleError` for the
+Teams-only write ops. Scopes: `SCOPES_CHAT` added to `msal_graph` (`Chat.ReadWrite`)
+and `google_oauth` (Workspace chat scopes), both in the sign-in consent — **adding
+them forces existing accounts to Sign Out → Sign In once**.
+
+### Also this session — Mail / Calendar / shell
+- **Sidebar unread badges** per account: accent mail-unread pill (Graph inbox
+  `unreadItemCount` / Gmail `INBOX.messagesUnread` via `client.inbox_unread()`)
+  + red chat pill. `window.set_account_unread` / `set_account_chat_unread`,
+  styled `.cloudy-badge` / `.cloudy-badge.chat`.
+- **Mail pagination** — `list_messages_page` (Graph `@odata.nextLink` / Gmail
+  `nextPageToken`) + a "Load older messages" row. **"Unread" virtual folder**
+  (default at startup, filters the inbox client-side) + **per-account folder
+  memory** (`window.remember_mail_folder`/`last_mail_folder`, survives account
+  switches). **Multi-select** (MULTIPLE mode, Shift/Ctrl) + **Delete on
+  selection**; **arrow nav** (↑/↓/←/→ open in reader, Shift extends), Ctrl+A,
+  Ctrl+R reply, Ctrl+N new. **Search** (`set_filter_func`).
+- **Calendar** — **"● Live now"** marker on ongoing events (`_is_live`);
+  multi-select + arrow nav + Delete on selected events; **search**
+  (`set_filter_func`). **Notification deep-link fix**: event notifications now
+  carry the event id and open the specific event (`open_calendar_event` →
+  `CalendarView.open_event`) — previously only landed on the tab.
+- **Teal accent**: `data/style.css` overrides `@accent_bg_color`/`accent_fg_color`/
+  `accent_color` (`#2190a4`) at APPLICATION priority.
+
+### Next / deferred (asked for, not yet built)
+- **Group-chat creation + member management** (add/remove/rename) — Graph
+  `POST /chats` (group) + `/chats/{id}/members`.
+- **Arbitrary file attachments** (non-image: PDFs/docs) — OneDrive upload then
+  reference as a `reference` attachment.
+- **Presence dots** (online/away) — `POST /communications/getPresencesByUserId`
+  (`Presence.Read`).
+- **Forward into an existing chat** (chat picker) — today Forward opens a *new*
+  chat prefilled.
+- **Google Chat**: image send, edit, reactions, member list, message search are
+  all stubbed (`GoogleError`/`[]`) — Workspace media-upload + APIs needed.
+- Not feasible for a delegated desktop client (don't promise): typing indicators,
+  read receipts, mute/pin/hide chat, true push (we poll), threaded chat replies.
+
+## ⏭ Continue here — earlier session (2026-06-15)
 
 ### Done this session
 - **Inline event edit** (NEXT #1, see below) — shipped + built into RPM/Flatpak.

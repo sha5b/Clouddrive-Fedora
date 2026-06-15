@@ -19,6 +19,20 @@ from gi.repository import Adw, GLib, Gtk
 from .metrics import ICON_LG, SPACE_L, SPACE_M
 
 
+def local_initial_folder():
+    """A fast local folder (XDG Documents, else home) to open file pickers in.
+
+    Without this, the portal restores its last-used location and stats every
+    mounted volume for its sidebar — and an rclone FUSE *network* mount answers
+    slowly, so the dialog can hang for seconds before it appears. Pinning a
+    local start folder sidesteps that."""
+    from gi.repository import Gio
+
+    path = (GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_DOCUMENTS)
+            or GLib.get_home_dir())
+    return Gio.File.new_for_path(path) if path else None
+
+
 # -- background work ------------------------------------------------------
 def run_async(work: Callable[[], object], on_done: Callable[[object, str | None], object]
               ) -> None:

@@ -16,6 +16,7 @@ CAPABILITY_UI = {
     "files": (_("Files"), "folder-symbolic"),
     "mail": (_("Mail"), "mail-unread-symbolic"),
     "calendar": (_("Calendar"), "x-office-calendar-symbolic"),
+    "chat": (_("Chat"), "user-available-symbolic"),
 }
 
 
@@ -37,8 +38,13 @@ class CloudyWindow(Adw.ApplicationWindow):
 
         self._account_stack = None
         self._account_mail_view = None
+        self._account_chat_view = None
+        self._account_calendar_view = None
         self._account_shown = None
         self._last_tab: dict = {}  # account id -> last-viewed tab name
+        self._mail_folder_by_account: dict = {}  # account id -> last mail folder id
+        self._account_badges: dict = {}  # account id -> unread-mail Gtk.Label
+        self._account_chat_badges: dict = {}  # account id -> unread-chat Gtk.Label
 
         self._bind_window_state()
         self.connect("close-request", self._on_close_request)
@@ -69,6 +75,8 @@ class CloudyWindow(Adw.ApplicationWindow):
 
     # -- sidebar ----------------------------------------------------------
     def _refresh_sidebar(self) -> None:
+        self._account_badges.clear()  # rows are rebuilt; drop stale widget refs
+        self._account_chat_badges.clear()
         self.sidebar_list.remove_all()
         if not self._registry.is_empty():
             self.sidebar_list.append(self._make_overview_row())
@@ -96,9 +104,54 @@ class CloudyWindow(Adw.ApplicationWindow):
             subtitle = _("Signed in") if account.signed_in else _("Sign-in pending")
         row = Adw.ActionRow(title=esc(account.display_name), subtitle=subtitle)
         row.add_prefix(Gtk.Image.new_from_icon_name(icon))
+
+        # Red chat badge (new Teams/Chat messages) + accent unread-mail badge.
+        # Both are filled in by the notifier's poll; hidden when their count is 0.
+        app = self.get_application()
+        notifier = getattr(app, "notifier", None)
+
+        chat_badge = Gtk.Label(valign=Gtk.Align.CENTER)
+        chat_badge.add_css_class("cloudy-badge")
+        chat_badge.add_css_class("chat")
+        chat_badge.add_css_class("numeric")
+        row.add_suffix(chat_badge)
+        self._account_chat_badges[account.id] = chat_badge
+        self._set_badge(chat_badge, notifier.chat_unread_count(account.id) if notifier else 0)
+
+        badge = Gtk.Label(valign=Gtk.Align.CENTER)
+        badge.add_css_class("cloudy-badge")
+        badge.add_css_class("numeric")
+        row.add_suffix(badge)
+        self._account_badges[account.id] = badge
+        self._set_badge(badge, notifier.unread_count(account.id) if notifier else 0)
+
         row.set_activatable(True)
         row._account_id = account.id  # carry the id for selection
         return row
+
+    @staticmethod
+    def _set_badge(badge: Gtk.Label, count: int) -> None:
+        badge.set_text(str(count) if count else "")
+        badge.set_visible(bool(count))
+
+    def set_account_unread(self, account_id: str, count: int) -> None:
+        """Update an account row's unread-mail badge (called by the notifier)."""
+        badge = self._account_badges.get(account_id)
+        if badge is not None:
+            self._set_badge(badge, count)
+
+    def set_account_chat_unread(self, account_id: str, count: int) -> None:
+        """Update an account row's red chat badge (called by the notifier)."""
+        badge = self._account_chat_badges.get(account_id)
+        if badge is not None:
+            self._set_badge(badge, count)
+
+    # -- per-account mail folder memory (survives account switches) -------
+    def remember_mail_folder(self, account_id: str, folder_id: str) -> None:
+        self._mail_folder_by_account[account_id] = folder_id
+
+    def last_mail_folder(self, account_id: str):
+        return self._mail_folder_by_account.get(account_id)
 
     def _on_row_selected(self, _list, row) -> None:
         if row is None:
@@ -136,10 +189,17 @@ class CloudyWindow(Adw.ApplicationWindow):
             self._show_disabled_account(account)
             return
         caps = capabilities_of(module) if module else []
+        # Hide surfaces a personal (consumer) account can't use: Teams Chat has
+        # no consumer API. Mail/Calendar's own Teams/Shared sources are likewise
+        # hidden inside those views (see MailView/CalendarView).
+        if account.is_personal:
+            caps = [c for c in caps if c != "chat"]
 
         stack = Adw.ViewStack()
         self._account_stack = stack
         self._account_mail_view = None
+        self._account_chat_view = None
+        self._account_calendar_view = None
         self._account_shown = account.id
         for key in caps:
             label, icon = CAPABILITY_UI.get(key, (key, "application-x-addon-symbolic"))
@@ -149,6 +209,16 @@ class CloudyWindow(Adw.ApplicationWindow):
 
                 if isinstance(child, MailView):
                     self._account_mail_view = child
+            elif key == "chat":
+                from .widgets.chat_view import ChatView
+
+                if isinstance(child, ChatView):
+                    self._account_chat_view = child
+            elif key == "calendar":
+                from .widgets.calendar_view import CalendarView
+
+                if isinstance(child, CalendarView):
+                    self._account_calendar_view = child
             page = stack.add_titled(child, key, label)
             page.set_icon_name(icon)
 
@@ -185,6 +255,8 @@ class CloudyWindow(Adw.ApplicationWindow):
     def _show_disabled_account(self, account) -> None:
         self._account_stack = None
         self._account_mail_view = None
+        self._account_chat_view = None
+        self._account_calendar_view = None
         self._account_shown = account.id
         status = Adw.StatusPage(
             icon_name="action-unavailable-symbolic",
@@ -232,6 +304,26 @@ class CloudyWindow(Adw.ApplicationWindow):
             return
         if self._account_stack is not None:
             self._account_stack.set_visible_child_name(tab)
+
+    def open_chat(self, account, chat_id) -> None:
+        """Show the account's Chat tab and open a specific conversation."""
+        self._select_sidebar_account(account.id)
+        if self._account_shown != account.id:
+            return
+        if self._account_stack is not None:
+            self._account_stack.set_visible_child_name("chat")
+        if self._account_chat_view is not None:
+            self._account_chat_view.open_chat(chat_id)
+
+    def open_calendar_event(self, account, event_id) -> None:
+        """Show the account's Calendar tab and open a specific event."""
+        self._select_sidebar_account(account.id)
+        if self._account_shown != account.id:
+            return
+        if self._account_stack is not None:
+            self._account_stack.set_visible_child_name("calendar")
+        if self._account_calendar_view is not None:
+            self._account_calendar_view.open_event(event_id)
 
     def _select_sidebar_account(self, account_id) -> None:
         row = self.sidebar_list.get_first_child()
@@ -311,6 +403,10 @@ class CloudyWindow(Adw.ApplicationWindow):
                 from .widgets.calendar_view import CalendarView
 
                 return CalendarView(self, account)
+            if key == "chat":
+                from .widgets.chat_view import ChatView
+
+                return ChatView(self, account)
 
         status = Adw.StatusPage(
             icon_name=CAPABILITY_UI.get(key, (None, "application-x-addon-symbolic"))[1],
@@ -359,11 +455,13 @@ class CloudyWindow(Adw.ApplicationWindow):
         from .core.auth.msal_graph import (
             GraphAuth,
             SCOPES_BASE,
+            SCOPES_CHAT,
             SCOPES_FILES,
             SCOPES_GROUPS,
             SCOPES_MAIL,
             SCOPES_MAIL_SHARED,
             SCOPES_PEOPLE,
+            SCOPES_PRESENCE,
             SCOPES_TEAMS,
         )
 
@@ -371,10 +469,11 @@ class CloudyWindow(Adw.ApplicationWindow):
             auth = GraphAuth(client_id, secrets, account.id)
             # Request all capability scopes up front so a single consent covers
             # Files, Teams, Mail, Calendar, group + shared mailboxes/calendars,
-            # and People (To-field autocomplete).
+            # Chat (Teams messages), and People (To-field autocomplete).
             result = auth.sign_in_interactive(
                 SCOPES_BASE + SCOPES_FILES + SCOPES_TEAMS + SCOPES_GROUPS
-                + SCOPES_MAIL + SCOPES_MAIL_SHARED + SCOPES_PEOPLE
+                + SCOPES_MAIL + SCOPES_MAIL_SHARED + SCOPES_PEOPLE + SCOPES_CHAT
+                + SCOPES_PRESENCE
             )
             try:
                 ident = GraphAuth.fetch_userprincipalname(result["access_token"])
@@ -459,11 +558,13 @@ class CloudyWindow(Adw.ApplicationWindow):
 
         from .widgets.compose_view import ComposeWindow
 
-        def send(recipients, subj, bod):
+        def send(recipients, subj, bod, *, cc=None, bcc=None,
+                 attachments=None, importance="normal"):
             from .widgets.clients import build_account_client
 
             client = build_account_client(self.get_application(), account)
-            client.send_mail(to=recipients, subject=subj, body=bod)
+            client.send_mail(to=recipients, subject=subj, body=bod, cc=cc, bcc=bcc,
+                             html=True, attachments=attachments, importance=importance)
 
         ComposeWindow(self, account, from_label=account.display_name, send_fn=send,
                       to=to, subject=subject, body=body).present()

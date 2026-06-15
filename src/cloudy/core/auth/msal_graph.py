@@ -59,6 +59,15 @@ SCOPES_TEAMS = ["Team.ReadBasic.All"]
 # Read M365 group mailboxes (conversations) and group/team calendars. Usually
 # requires tenant-admin consent.
 SCOPES_GROUPS = ["Group.Read.All"]
+# Read + send the signed-in user's Teams chats (1:1 and group). Delegated and
+# unmetered (per-message billing only applies to *application* permissions).
+# Work/school accounts only — consumer Microsoft accounts have no Graph chats.
+SCOPES_CHAT = ["Chat.ReadWrite"]
+# Read presence (availability/activity) of the people you chat with, to show the
+# Teams-style green/away/busy/DND dots. Delegated work/school only; the only
+# delegated option is the read-all scope (per-user read isn't offered). Adding
+# this forces existing accounts to Sign Out → Sign In once.
+SCOPES_PRESENCE = ["Presence.Read.All"]
 
 _CACHE_KIND = "msal-cache"
 

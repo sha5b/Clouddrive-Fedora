@@ -64,7 +64,35 @@ class NotificationManager:
         self._seen_mail: dict[str, set] = {}      # account id -> {message id}
         self._primed: set = set()                 # accounts whose baseline is set
         self._notified_events: set = set()        # f"{acct}:{event id}"
+        self._unread: dict[str, int] = {}         # account id -> inbox unread count
+        self._seen_chat: dict[str, dict] = {}     # account id -> {chat id: last_at}
+        self._chat_unread: dict[str, set] = {}    # account id -> {chat id with new msgs}
         self._timer = None
+
+    def unread_count(self, account_id: str) -> int:
+        """Last-polled inbox unread count for an account (0 until first poll)."""
+        return self._unread.get(account_id, 0)
+
+    def chat_unread_count(self, account_id: str) -> int:
+        """Number of chats with unseen new messages (0 until first poll)."""
+        return len(self._chat_unread.get(account_id, ()))
+
+    def is_chat_unread(self, account_id: str, chat_id: str) -> bool:
+        """Whether a specific chat is flagged unread (so the chat list can show
+        the same chats the red badge counts — keeping the two consistent)."""
+        return chat_id in self._chat_unread.get(account_id, ())
+
+    def mark_chat_read(self, account_id: str, chat_id: str) -> None:
+        """Clear a chat's "new message" mark (called when the user opens it)."""
+        seen = self._chat_unread.get(account_id)
+        if seen and chat_id in seen:
+            seen.discard(chat_id)
+            self._push_chat_badge(account_id)
+
+    def _push_chat_badge(self, account_id: str) -> None:
+        win = self._app.props.active_window
+        if win is not None and hasattr(win, "set_account_chat_unread"):
+            win.set_account_chat_unread(account_id, self.chat_unread_count(account_id))
 
     # -- lifecycle --------------------------------------------------------
     def start(self) -> None:
@@ -101,6 +129,8 @@ class NotificationManager:
                 self._poll_mail(account)
             if "calendar" in caps:
                 self._poll_calendar(account)
+            if "chat" in caps:
+                self._poll_chat(account)
         return True  # keep the timer alive
 
     def _poll_mail(self, account) -> None:
@@ -111,15 +141,25 @@ class NotificationManager:
 
             client = build_account_client(self._app, account)
             folder = "INBOX" if account.provider == "google" else "inbox"
-            return client.list_messages(folder)
+            messages = client.list_messages(folder)
+            try:
+                unread = client.inbox_unread()
+            except Exception:  # noqa: BLE001 - count is best-effort; fall back
+                unread = sum(1 for m in messages if not m.get("is_read", True))
+            return (messages, unread)
 
         threading.Thread(
             target=self._run, args=(work, lambda r, e: self._on_mail(account, first_time, r, e)),
             daemon=True).start()
 
-    def _on_mail(self, account, first_time, messages, error) -> bool:
-        if error or messages is None:
+    def _on_mail(self, account, first_time, result, error) -> bool:
+        if error or result is None:
             return False
+        messages, unread = result
+        self._unread[account.id] = unread
+        win = self._app.props.active_window
+        if win is not None and hasattr(win, "set_account_unread"):
+            win.set_account_unread(account.id, unread)
         seen = self._seen_mail.setdefault(account.id, set())
         ids = {m.get("id") for m in messages}
         if first_time:  # baseline only: learn current inbox without notifying
@@ -133,12 +173,19 @@ class NotificationManager:
             self._notify_mail(account, msg)
         return False
 
+    def _type_icon(self, symbolic_name: str) -> Gio.Icon:
+        """A per-kind notification icon (mail / calendar / chat) with the app
+        logo as the fallback, so GNOME shows a recognizable glyph like its own
+        native apps instead of the same Cloudy logo for everything."""
+        return Gio.ThemedIcon.new_from_names(
+            [symbolic_name, self._app.application_id])
+
     def _notify_mail(self, account, msg) -> None:
         sender = _short_sender(msg.get("from", "")) or _("Someone")
         subject = msg.get("subject", "") or _("(no subject)")
         note = Gio.Notification.new(_("New mail · %s") % account.display_name)
         note.set_body(f"{sender}: {subject}")
-        note.set_icon(Gio.ThemedIcon.new(self._app.application_id))
+        note.set_icon(self._type_icon("mail-unread-symbolic"))
         note.set_priority(Gio.NotificationPriority.NORMAL)
         payload = GLib.Variant("s", f"{account.id}\x1f{msg.get('id', '')}")
         note.set_default_action(
@@ -184,11 +231,65 @@ class NotificationManager:
         when = start.astimezone().strftime("%H:%M")
         note = Gio.Notification.new(_("Upcoming event"))
         note.set_body(_("%(title)s at %(time)s") % {"title": subject, "time": when})
-        note.set_icon(Gio.ThemedIcon.new(self._app.application_id))
+        note.set_icon(self._type_icon("x-office-calendar-symbolic"))
         note.set_priority(Gio.NotificationPriority.HIGH)
-        note.set_default_action(Gio.Action.print_detailed_name(
-            "app.notify-open-calendar", GLib.Variant("s", account.id)))
+        payload = GLib.Variant("s", f"{account.id}\x1f{ev.get('id', '')}")
+        note.set_default_action(
+            Gio.Action.print_detailed_name("app.notify-open-calendar", payload))
         self._app.send_notification(f"event-{account.id}-{ev.get('id', '')}", note)
+
+    # -- chat (Teams / Google Chat) --------------------------------------
+    def _poll_chat(self, account) -> None:
+        first_time = f"chat:{account.id}" not in self._primed
+
+        def work():
+            from ..widgets.clients import build_account_client
+
+            client = build_account_client(self._app, account)
+            return client.list_chats()
+
+        threading.Thread(
+            target=self._run,
+            args=(work, lambda r, e: self._on_chat(account, first_time, r, e)),
+            daemon=True).start()
+
+    def _on_chat(self, account, first_time, chats, error) -> bool:
+        if error or not chats:
+            return False
+        seen = self._seen_chat.setdefault(account.id, {})
+        if first_time:  # baseline only: learn current chats without notifying
+            for c in chats:
+                seen[c["id"]] = c.get("last_at", "")
+            self._primed.add(f"chat:{account.id}")
+            return False
+        unread = self._chat_unread.setdefault(account.id, set())
+        fresh = []
+        for c in chats:
+            last = c.get("last_at", "")
+            changed = bool(last) and last != seen.get(c["id"])
+            seen[c["id"]] = last
+            # Only notify/badge for messages from SOMEONE ELSE — your own just-sent
+            # message also moves the chat's timestamp, but shouldn't ping you.
+            if changed and not c.get("from_me"):
+                fresh.append(c)
+                unread.add(c["id"])  # light up the red badge
+        if fresh:
+            self._push_chat_badge(account.id)
+        for chat in fresh[:_MAX_MAIL_PER_TICK]:
+            self._notify_chat(account, chat)
+        return False
+
+    def _notify_chat(self, account, chat) -> None:
+        name = chat.get("name", "") or _("Chat")
+        preview = (chat.get("preview", "") or "").strip() or _("New message")
+        note = Gio.Notification.new(_("New message · %s") % account.display_name)
+        note.set_body(f"{name}: {preview}")
+        note.set_icon(self._type_icon("user-available-symbolic"))
+        note.set_priority(Gio.NotificationPriority.HIGH)
+        payload = GLib.Variant("s", f"{account.id}\x1f{chat['id']}")
+        note.set_default_action(
+            Gio.Action.print_detailed_name("app.notify-open-chat", payload))
+        self._app.send_notification(f"chat-{account.id}-{chat['id']}", note)
 
     # -- thread plumbing --------------------------------------------------
     @staticmethod

@@ -104,6 +104,7 @@ class CloudyApplication(Adw.Application):
         # Notification deep-links carry a string target.
         self._add_target_action("notify-open-mail", self._on_notify_open_mail)
         self._add_target_action("notify-open-calendar", self._on_notify_open_calendar)
+        self._add_target_action("notify-open-chat", self._on_notify_open_chat)
 
     def _add_target_action(self, name, callback):
         action = Gio.SimpleAction.new(name, GLib.VariantType.new("s"))
@@ -272,9 +273,24 @@ class CloudyApplication(Adw.Application):
         window = self.props.active_window
         if window is None:
             return
-        account = self.registry.get(param.get_string())
+        account_id, _sep, event_id = param.get_string().partition("\x1f")
+        account = self.registry.get(account_id)
         if account is not None:
-            window.open_account_tab(account, "calendar")
+            if event_id:
+                window.open_calendar_event(account, event_id)
+            else:
+                window.open_account_tab(account, "calendar")
+        window.present()
+
+    def _on_notify_open_chat(self, _action, param):
+        self.activate()
+        window = self.props.active_window
+        if window is None:
+            return
+        account_id, _sep, chat_id = param.get_string().partition("\x1f")
+        account = self.registry.get(account_id)
+        if account is not None and chat_id:
+            window.open_chat(account, chat_id)
         window.present()
 
     def _on_quit(self, *_args):
