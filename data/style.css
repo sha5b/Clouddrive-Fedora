@@ -128,3 +128,13 @@
   outline: 2px solid @accent_color;
   outline-offset: 1px;
 }
+/* Newly-arrived message bubbles fade in (the class is applied on append and
+   removed once the animation has played, so an in-place rebuild won't replay
+   it). Opacity only — GTK CSS animates it cheaply on the render thread. */
+@keyframes cloudy-bubble-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.cloudy-bubble-new {
+  animation: cloudy-bubble-in 220ms ease-out;
+}

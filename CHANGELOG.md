@@ -12,6 +12,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Chat**: a new Teams-style messenger capability (`ChatCapability`) for
+  **Teams chats** (work/school Microsoft accounts, `Chat.ReadWrite`) and
+  **Google Chat** (Workspace). 1:1, group and meeting threads with inline
+  images, emoji reactions, @mentions, reply/forward, edit/delete, multi-select,
+  presence dots, message search, and live (polled) updates. Chat unread shows a
+  red sidebar badge and raises notifications that deep-link into the thread.
+  Threads update **incrementally** (new messages fade in without rebuilding or
+  reloading the rest of the thread), and jump-to-latest is smoothly animated.
 - **Packaging**: Fedora **RPM** (`make rpm`) and a single-file **Flatpak bundle**
   (`make flatpak-bundle`); `make release` produces both into `release/` and
   installs the bundle. OAuth client IDs/secrets are baked at build time from

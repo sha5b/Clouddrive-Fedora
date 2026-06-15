@@ -23,13 +23,14 @@ SPDX-FileCopyrightText: 2026 Shahab Nedaei
 ---
 
 A native **GTK4 / Libadwaita** super-app for Fedora that brings **Microsoft 365**
-(OneDrive + Teams/SharePoint, Mail, Calendar) and **Google** (Gmail, Calendar,
-Drive) into one window — with file-manager (Nautilus) integration, live
-network-drive mounts, and a unified, provider-agnostic **mail + calendar** surface.
+(OneDrive + Teams/SharePoint, Mail, Calendar, Chat) and **Google** (Gmail,
+Calendar, Drive, Chat) into one window — with file-manager (Nautilus)
+integration, live network-drive mounts, and a unified, provider-agnostic
+**mail + calendar + chat** surface.
 
 Cloudy does **not** reinvent sync engines. It *orchestrates* proven backends —
 `rclone` for the FUSE file mounts, and **Microsoft Graph** / **Google REST** for
-mail & calendar — behind one adaptive UI.
+mail, calendar & chat — behind one adaptive UI.
 
 ## Screenshots
 
@@ -51,6 +52,11 @@ mail & calendar — behind one adaptive UI.
   mailbox sources and contacts autocomplete.
 - **Calendar**: month grid + agenda, event detail with an attendee response
   tracker, and **create / edit / delete** events + RSVP.
+- **Chat**: a Teams-style messenger for **Teams chats** (work/school Microsoft
+  accounts) and **Google Chat** (Workspace) — 1:1, group and meeting threads,
+  inline images (attach or paste), emoji reactions, @mentions, reply/forward,
+  edit/delete, multi-select, group create + member management, live message
+  updates, presence dots, and message search.
 - **Dashboard**: pinned sources, upcoming events, recent mail, and recent file
   changes aggregated across every account.
 - **Desktop integration**: system `mailto:` / `.ics` handler, new-mail/event

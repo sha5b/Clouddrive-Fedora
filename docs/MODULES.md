@@ -39,6 +39,9 @@ Capability mix-ins declare *what* a module can surface in the UI:
 - `FilesCapability` — sync/mount control, drive listing, share links.
 - `MailCapability` — folders, message list, threads, send.
 - `CalendarCapability` — calendars, events, free/busy.
+- `ChatCapability` — chat list (1:1 / group / meeting), message threads,
+  send/edit/delete, inline images, reactions, presence, members/@mentions, group
+  create + member management, and message search.
 
 A module implements `ServiceModule` plus any capabilities it supports. The shell
 queries capabilities to decide which sidebar surfaces and content panes to show.
@@ -68,7 +71,8 @@ same**, so this migration is internal.
 
 ## The Microsoft 365 module specifically
 
-It signs in once via Graph and exposes Files + Mail + Calendar. The **Files**
+It signs in once via Graph and exposes Files + Mail + Calendar + Chat (Teams
+chat needs a work/school account). The **Files**
 capability (OneDrive/SharePoint) is an orchestration layer, not a sync engine:
 
 - **Selective sync** → `abraunegg/onedrive` (one client instance per SharePoint

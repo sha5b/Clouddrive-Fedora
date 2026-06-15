@@ -20,13 +20,13 @@ SPDX-FileCopyrightText: 2026 Shahab Nedaei
     <p>
       Cloudy brings Microsoft 365 and Google into one GNOME-native window. It
       mounts OneDrive, SharePoint and Teams libraries as live network drives in
-      your file manager, and gives mail and calendar from both Microsoft and
-      Google one consistent, provider-agnostic surface.
+      your file manager, and gives mail, calendar and chat from both Microsoft
+      and Google one consistent, provider-agnostic surface.
     </p>
     <p>
       It orchestrates proven backends — rclone for the file mounts, and the
-      Microsoft Graph and Google REST APIs for mail and calendar — rather than
-      reinventing them, behind one adaptive interface.
+      Microsoft Graph and Google REST APIs for mail, calendar and chat — rather
+      than reinventing them, behind one adaptive interface.
     </p>
     <p>Features:</p>
     <ul>
@@ -34,6 +34,7 @@ SPDX-FileCopyrightText: 2026 Shahab Nedaei
       <li>Files mounted as live two-way network drives, visible in GNOME Files and an in-app browser</li>
       <li>Mail with read, compose and reply, plus Me / Teams / Shared mailbox sources</li>
       <li>A month calendar and agenda with event create, edit, delete and RSVP</li>
+      <li>Chat for Teams chats (work/school) and Google Chat (Workspace) — 1:1, group and meeting threads with images, reactions, mentions and live updates</li>
       <li>A dashboard aggregating upcoming events, recent mail and recent file changes across every account</li>
       <li>Desktop integration: system mail and calendar handler, new-mail notifications, and file-manager status</li>
       <li>Tokens stored securely in the system keyring — never in plain text</li>
@@ -59,6 +60,7 @@ SPDX-FileCopyrightText: 2026 Shahab Nedaei
     <keyword>Sync</keyword>
     <keyword>Mail</keyword>
     <keyword>Calendar</keyword>
+    <keyword>Chat</keyword>
     <keyword>Files</keyword>
   </keywords>
 

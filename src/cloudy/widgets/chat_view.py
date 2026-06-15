@@ -116,16 +116,22 @@ class ChatView(Adw.Bin):
             hscrollbar_policy=Gtk.PolicyType.NEVER, vexpand=True)
         self._thread_scroll.set_child(self._thread)
         # Stick to the bottom: re-pin on every size change (bubbles/images
-        # allocate *after* render, so a one-shot scroll lands mid-thread). Only
-        # an actual user scroll (not layout churn) turns auto-pin off, so the
-        # initial open reliably lands on the newest message.
+        # allocate *after* render, so a one-shot scroll lands mid-thread). The
+        # pinned/scrolled-up state is derived purely from the adjustment's
+        # value, so it stays correct no matter how the user scrolls — wheel,
+        # trackpad, scrollbar drag, PageUp/Down or Home/End all route through
+        # the same "value-changed" handler.
         self._autoscroll = True
         self._anchor_bottom = None  # distance-from-bottom to preserve on prepend
-        self._thread_scroll.get_vadjustment().connect("changed", self._on_thread_resized)
-        scroll = Gtk.EventControllerScroll(
-            flags=Gtk.EventControllerScrollFlags.VERTICAL)
-        scroll.connect("scroll", self._on_user_scroll)
-        self._thread_scroll.add_controller(scroll)
+        self._adjusting = False     # guard: ignore our own programmatic scrolls
+        self._scroll_anim = None    # active "jump to latest" animation, if any
+        self._rendered_sigs = []    # per-message fingerprints of the live thread
+        self._has_optimistic = False  # an un-acked optimistic bubble is showing
+        self._hold_tick = None      # frame-clock callback holding scroll position
+        self._hold_until = 0        # frame time (µs) the hold expires
+        vadj = self._thread_scroll.get_vadjustment()
+        vadj.connect("changed", self._on_thread_resized)        # height changed
+        vadj.connect("value-changed", self._on_thread_scrolled)  # any scroll
         # Floating "jump to newest" button, shown only when scrolled up.
         self._to_bottom_btn = Gtk.Button(
             icon_name="go-bottom-symbolic", tooltip_text=_("Go to latest"),
@@ -133,7 +139,8 @@ class ChatView(Adw.Bin):
             margin_end=14, margin_bottom=14, visible=False)
         self._to_bottom_btn.add_css_class("circular")
         self._to_bottom_btn.add_css_class("osd")
-        self._to_bottom_btn.connect("clicked", lambda *_a: self._scroll_to_bottom())
+        self._to_bottom_btn.connect("clicked",
+                                    lambda *_a: self._scroll_to_bottom(animate=True))
         self._thread_overlay = Gtk.Overlay()
         self._thread_overlay.set_child(self._thread_scroll)
         self._thread_overlay.add_overlay(self._to_bottom_btn)
@@ -966,6 +973,8 @@ class ChatView(Adw.Bin):
 
     def _clear_thread(self) -> None:
         self._bubble_widgets = {}
+        self._rendered_sigs = []
+        self._has_optimistic = False
         child = self._thread.get_first_child()
         while child is not None:
             nxt = child.get_next_sibling()
@@ -975,22 +984,53 @@ class ChatView(Adw.Bin):
     def _render_thread(self, chat_id, messages) -> None:
         if chat_id != self._chat_id:
             return
+        # Skip empty/system rows so a bare timestamp never shows as its own
+        # "message" — the time belongs inside a real bubble.
+        messages = [m for m in messages if self._has_content(m)]
+        new_sig = self._thread_signature(messages)
+        if new_sig == self._thread_sig and self._bubble_widgets:
+            return  # nothing visible changed — leave the thread (and scroll) alone
         # If the user has scrolled up (not pinned to the bottom), preserve their
-        # position across the rebuild instead of snapping to the newest message —
+        # position across the update instead of snapping to the newest message —
         # so a background refresh (poll), a reaction, or an edit doesn't yank the
         # view up/down. Anchor to the distance-from-bottom (restored in
         # _on_thread_resized once the new content lays out).
         adj = self._thread_scroll.get_vadjustment()
         if not self._autoscroll:
             self._anchor_bottom = adj.get_upper() - adj.get_value()
-        self._clear_thread()
-        self._older_row = None
-        # Skip empty/system rows so a bare timestamp never shows as its own
-        # "message" — the time belongs inside a real bubble.
-        messages = [m for m in messages if self._has_content(m)]
         if not messages:
+            self._full_render(messages)
             self._thread.append(Gtk.Label(
                 label=_("No messages yet. Say hello!"), css_classes=["dim-label"]))
+            self._thread_sig = new_sig
+            return
+        # Fast path: the live thread is an exact prefix of the new one (only new
+        # messages were appended — the common case for an incoming message). Just
+        # append the new bubbles and fade them in, leaving every existing widget
+        # (and its already-decoded image) untouched. No flicker, no image reload,
+        # no scroll jump. Anything else (an edit, reaction, or deletion to an
+        # older message) falls back to a full rebuild.
+        appended = self._appended_only(messages)
+        if appended is not None:
+            for msg in appended:
+                widget = self._bubble(msg)
+                if msg.get("id"):
+                    self._bubble_widgets[msg["id"]] = widget
+                self._thread.append(widget)
+                self._animate_in(widget)
+        else:
+            self._full_render(messages)
+        self._rendered_sigs = [self._msg_sig(m) for m in messages]
+        self._thread_sig = new_sig
+        if self._autoscroll:
+            self._scroll_to_bottom()
+
+    def _full_render(self, messages) -> None:
+        """Tear down and rebuild every bubble from scratch (used on first open
+        and whenever an in-place append can't preserve the thread)."""
+        self._clear_thread()
+        self._older_row = None
+        if not messages:
             return
         self._sync_older_row()
         for msg in messages:
@@ -998,20 +1038,35 @@ class ChatView(Adw.Bin):
             if msg.get("id"):
                 self._bubble_widgets[msg["id"]] = widget
             self._thread.append(widget)
-        self._thread_sig = self._thread_signature(messages)
-        if self._autoscroll:
-            self._scroll_to_bottom()
+
+    def _appended_only(self, messages):
+        """If the currently-rendered thread is an unchanged prefix of
+        ``messages``, return just the trailing messages that need appending;
+        otherwise return ``None`` to force a full rebuild. An un-acked optimistic
+        bubble always forces a rebuild (so it's replaced, never duplicated)."""
+        old = self._rendered_sigs
+        if self._has_optimistic or not old or len(messages) < len(old):
+            return None
+        for i, sig in enumerate(old):
+            if self._msg_sig(messages[i]) != sig:
+                return None
+        return messages[len(old):]
 
     @staticmethod
-    def _thread_signature(messages):
-        """A cheap fingerprint of the visible thread, so the adaptive poll only
-        rebuilds bubbles when something actually changed (new/edited/reacted/
-        deleted message) instead of on every tick."""
-        return tuple(
-            (m.get("id"), m.get("text"), len(m.get("attachments") or []),
-             tuple(sorted((r.get("emoji"), r.get("count"))
-                          for r in (m.get("reactions") or []))))
-            for m in messages)
+    def _msg_sig(m):
+        """A cheap fingerprint of one message — changes when its text,
+        attachments or reactions change (edited/reacted), so a stale bubble is
+        detected and rebuilt."""
+        return (m.get("id"), m.get("text"), len(m.get("attachments") or []),
+                tuple(sorted((r.get("emoji"), r.get("count"))
+                             for r in (m.get("reactions") or []))))
+
+    @classmethod
+    def _thread_signature(cls, messages):
+        """A cheap fingerprint of the whole visible thread, so the adaptive poll
+        only touches the bubbles when something actually changed (new/edited/
+        reacted/deleted message) instead of on every tick."""
+        return tuple(cls._msg_sig(m) for m in messages)
 
     @staticmethod
     def _has_content(msg) -> bool:
@@ -1061,9 +1116,11 @@ class ChatView(Adw.Bin):
         cache = self._cache()
         cached = cache.get(self._msg_key(chat_id))
         base = list(cached[0]) if cached else []
-        cache.set(self._msg_key(chat_id), messages + base)
+        full = messages + base
+        cache.set(self._msg_key(chat_id), full)
         # Anchor the view: remember the distance from the bottom so prepending
-        # older bubbles grows the thread upward without moving what's on screen.
+        # older bubbles grows the thread upward without moving what's on screen,
+        # and hold that anchor every frame while the new bubbles' images decode.
         adj = self._thread_scroll.get_vadjustment()
         self._autoscroll = False
         self._anchor_bottom = adj.get_upper() - adj.get_value()
@@ -1078,58 +1135,117 @@ class ChatView(Adw.Bin):
                     self._bubble_widgets[msg["id"]] = widget
                 self._thread.insert_child_after(widget, None)
         self._sync_older_row()
+        # Keep the render bookkeeping in step with what's now on screen — older +
+        # existing — so the next poll/edit takes the cheap in-place path instead
+        # of a full rebuild (which would reload every image and jump the view).
+        shown = [m for m in full if self._has_content(m)]
+        self._rendered_sigs = [self._msg_sig(m) for m in shown]
+        self._thread_sig = self._thread_signature(shown)
+        self._hold_position()
         return False
 
-    def _scroll_to_bottom(self) -> None:
+    # -- scroll plumbing --------------------------------------------------
+    _BOTTOM_SLACK = 60  # px from the true bottom still counted as "pinned"
+
+    def _set_scroll(self, adj, value: float) -> None:
+        """Move the adjustment ourselves, flagged so ``_on_thread_scrolled``
+        doesn't mistake the programmatic move for the user scrolling away."""
+        self._adjusting = True
+        adj.set_value(value)
+        self._adjusting = False
+
+    def _scroll_to_bottom(self, *, animate: bool = False) -> None:
         self._autoscroll = True
         self._anchor_bottom = None
-        adj = self._thread_scroll.get_vadjustment()
-        adj.set_value(adj.get_upper() - adj.get_page_size())
         self._to_bottom_btn.set_visible(False)
-        # Bubbles allocate (and the page grows) *after* this call, so the value
-        # above lands short of the real bottom. Re-pin once on the next main-loop
-        # pass — after layout — so a new message snaps to the bottom immediately
-        # instead of drifting down a moment later.
-        def _pin() -> bool:
-            if self._autoscroll:
-                a = self._thread_scroll.get_vadjustment()
-                a.set_value(a.get_upper() - a.get_page_size())
-            return False
+        adj = self._thread_scroll.get_vadjustment()
+        target = adj.get_upper() - adj.get_page_size()
+        if animate and abs(target - adj.get_value()) > 4:
+            self._animate_to(adj, target)
+        else:
+            self._set_scroll(adj, target)
+        # Bubbles + images allocate *after* this call, so the value above lands
+        # short of the real bottom. Hold the position every frame for a short
+        # settle window (below) instead of a one-shot re-pin, so a late-decoding
+        # image can't leave a one-frame "peek" that reads as a jump.
+        self._hold_position()
 
-        # Pin on idle (after this layout pass) AND once more shortly after, since
-        # bubbles + images can take a couple of frames to reach their final size.
-        GLib.idle_add(_pin)
-        GLib.timeout_add(120, _pin)
+    def _hold_position(self, duration_us: int = 350_000) -> None:
+        """Re-assert the pin/anchor on *every* frame for a short settle window.
+
+        Async growth (an image finishing decode, a font/measure pass) lands a
+        frame or two after we scroll. Correcting only reactively (on the
+        adjustment's ``changed``) leaves a visible one-frame shift each time —
+        which, when several older messages with images load at once, reads as the
+        view "jumping multiple times". Holding per-frame collapses all of that
+        into a single stable position."""
+        clock = self._thread_scroll.get_frame_clock()
+        if clock is None:  # not realized yet — the reactive handler covers it
+            return
+        self._hold_until = clock.get_frame_time() + duration_us
+        if self._hold_tick is not None:
+            return  # already holding; we just extended the window
+
+        def tick(_widget, frame_clock) -> bool:
+            adj = self._thread_scroll.get_vadjustment()
+            if self._autoscroll:
+                self._set_scroll(adj, adj.get_upper() - adj.get_page_size())
+            elif self._anchor_bottom is not None:
+                self._set_scroll(adj, max(0, adj.get_upper() - self._anchor_bottom))
+            if frame_clock.get_frame_time() >= self._hold_until:
+                self._hold_tick = None
+                return GLib.SOURCE_REMOVE
+            return GLib.SOURCE_CONTINUE
+
+        self._hold_tick = self._thread_scroll.add_tick_callback(tick)
+
+    def _animate_to(self, adj, target: float) -> None:
+        """Glide the thread to ``target`` with a short eased animation instead of
+        a hard jump — used for the "go to latest" button."""
+        if self._scroll_anim is not None:
+            self._scroll_anim.pause()
+        cb = Adw.CallbackAnimationTarget.new(lambda v: self._set_scroll(adj, v))
+        anim = Adw.TimedAnimation.new(
+            self._thread_scroll, adj.get_value(), target, 250, cb)
+        anim.set_easing(Adw.Easing.EASE_OUT_CUBIC)
+        self._scroll_anim = anim
+        anim.play()
 
     def _on_thread_resized(self, adj) -> None:
         # Content (or a late-loading image) changed the height.
         if self._autoscroll:
-            adj.set_value(adj.get_upper() - adj.get_page_size())
+            self._set_scroll(adj, adj.get_upper() - adj.get_page_size())
         elif self._anchor_bottom is not None:
             # Scrolled up: keep the user where they were by holding the same
             # distance from the bottom on EVERY size change (older messages
             # prepended above, late images, etc.) — so orientation never shifts.
-            adj.set_value(max(0, adj.get_upper() - self._anchor_bottom))
+            self._set_scroll(adj, max(0, adj.get_upper() - self._anchor_bottom))
 
-    def _on_user_scroll(self, _ctrl, _dx, dy) -> bool:
-        # A real wheel/trackpad scroll: stop pinning when the user goes up,
-        # resume when they return to the bottom.
-        adj = self._thread_scroll.get_vadjustment()
-        if dy < 0:
-            self._autoscroll = False
-            # Near the top → pull older messages automatically (no button).
-            if adj.get_value() <= 120:
-                self._load_older()
-        else:
-            if adj.get_value() >= adj.get_upper() - adj.get_page_size() - 60:
-                self._autoscroll = True
-        # Track the current distance-from-bottom so size changes can hold it
-        # (orientation anchor); cleared once we're pinned to the bottom again.
-        self._anchor_bottom = (None if self._autoscroll
+    def _on_thread_scrolled(self, adj) -> None:
+        # Any scroll input (wheel, trackpad, scrollbar drag, keyboard) lands
+        # here. We ignore our own programmatic moves; for a genuine user scroll
+        # we derive the pinned/scrolled-up state from the position so every input
+        # method behaves identically.
+        if self._adjusting:
+            return
+        near_bottom = (adj.get_value()
+                       >= adj.get_upper() - adj.get_page_size() - self._BOTTOM_SLACK)
+        self._autoscroll = near_bottom
+        self._anchor_bottom = (None if near_bottom
                                else max(0, adj.get_upper() - adj.get_value()))
-        # Show the "go to latest" button whenever we're not pinned to the bottom.
-        self._to_bottom_btn.set_visible(not self._autoscroll)
-        return False
+        self._to_bottom_btn.set_visible(not near_bottom)
+        # Near the top → pull older messages automatically (no button).
+        if not near_bottom and adj.get_value() <= 120:
+            self._load_older()
+
+    # -- bubble entrance animation ----------------------------------------
+    def _animate_in(self, widget) -> None:
+        """Fade a freshly-arrived bubble in. The CSS class carries a one-shot
+        opacity animation; we drop it afterwards so a later in-place rebuild of
+        the same message doesn't replay it."""
+        widget.add_css_class("cloudy-bubble-new")
+        GLib.timeout_add(260, lambda: (widget.remove_css_class("cloudy-bubble-new"),
+                                       False)[1])
 
     def _bubble(self, msg) -> Gtk.Widget:
         mine = bool(msg.get("is_mine"))
@@ -1408,11 +1524,15 @@ class ChatView(Adw.Bin):
             pic.add_controller(tap)
             box.remove(placeholder)
             box.append(pic)
-            # The image just grew the thread's height; if we're meant to be at
-            # the newest message, re-pin (a late-loading image is the usual
-            # reason the view lands just short of the bottom on open).
+            # The image just grew the thread's height. Re-assert the scroll
+            # position for a few frames: pinned-to-bottom snaps to the newest
+            # message (the usual reason the view lands just short of the bottom
+            # on open), and a scrolled-up/anchored view (e.g. after loading older
+            # history) holds steady instead of lurching as the image lands.
             if self._autoscroll:
                 self._scroll_to_bottom()
+            elif self._anchor_bottom is not None:
+                self._hold_position()
             return False
 
         run_async(work, done)
@@ -1870,8 +1990,13 @@ class ChatView(Adw.Bin):
         from datetime import datetime
 
         now_iso = datetime.now().astimezone().isoformat()
-        self._thread.append(self._bubble(
-            {"text": text, "is_mine": True, "sent": now_iso, "from": ""}))
+        bubble = self._bubble(
+            {"text": text, "is_mine": True, "sent": now_iso, "from": ""})
+        self._thread.append(bubble)
+        self._animate_in(bubble)
+        # An un-acked echo with no server id is showing — force the next render
+        # to rebuild (replacing it) rather than appending the real copy after it.
+        self._has_optimistic = True
         self._scroll_to_bottom()
 
     def _on_sent(self, chat_id, error) -> bool:

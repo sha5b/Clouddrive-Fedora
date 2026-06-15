@@ -12,6 +12,51 @@ Calendar)** and **Google (Gmail, Calendar, Drive)** on Fedora 44 (GNOME 50). It
 for mail/calendar) rather than reimplementing them. Read `docs/ARCHITECTURE.md`,
 `docs/AUTH.md`, `docs/SECRETS.md`, `docs/ROADMAP.md` for depth.
 
+## ⏭ Continue here — Chat scroll smoothness + animations (2026-06-15, latest)
+
+Polish pass over the Chat thread's scrolling and motion (`widgets/chat_view.py`,
+`data/style.css`). Builds + 4 meson tests green; headless widget import verified.
+The Adw animation API (`CallbackAnimationTarget`, `TimedAnimation`, `Easing`) was
+confirmed present in this libadwaita binding before use.
+
+- **Incremental thread updates** — `_render_thread` no longer tears down and
+  rebuilds every bubble on each poll/refresh. It keeps a per-message fingerprint
+  list (`_rendered_sigs`, `_msg_sig`); when the live thread is an unchanged
+  **prefix** of the new one (the common case: a message just arrived) it only
+  **appends** the new bubbles (`_appended_only` → `_full_render` is the fallback
+  for edits/reactions/deletes to older messages). This stops the whole thread
+  **flickering and re-downloading every inline image** every 5 s, and removes the
+  scroll lurch that came with it. An un-acked optimistic echo forces a full
+  rebuild so it's replaced, never duplicated (`_has_optimistic`).
+- **Scroll state is now derived from the adjustment**, via its `value-changed`
+  signal (`_on_thread_scrolled`) — *replacing* the old `EventControllerScroll`.
+  This is the deliberate reversal of the previous note: wheel **and** trackpad
+  **and** scrollbar-drag **and** keyboard (PageUp/Home/End) now all update the
+  pinned/scrolled-up state and the "jump to latest" button identically. Our own
+  programmatic moves go through `_set_scroll`, which sets an `_adjusting` guard so
+  the handler ignores them. `changed` (`_on_thread_resized`) still re-pins on
+  height changes.
+- **Per-frame position hold** (`_hold_position`, a `add_tick_callback` over a
+  ~350 ms settle window) replaces the old one-shot `idle_add`+`timeout(120)`
+  re-pin. Re-asserting the pin/anchor on *every* frame collapses the
+  "jumps multiple times" seen when **loading older history**: several older
+  bubbles' images decode a frame or two apart, and a reactive (`changed`-only)
+  correction left a visible one-frame "peek" each time. `_on_older` now also
+  fixes a real bug — it updates `_rendered_sigs`/`_thread_sig` so a later poll
+  takes the cheap append path instead of a full image-reloading rebuild.
+- **Animated "jump to latest"** — the floating button glides with an
+  `Adw.TimedAnimation` (`EASE_OUT_CUBIC`, 250 ms) instead of snapping; auto-pins
+  stay instant.
+- **New-bubble fade-in** — appended/optimistic bubbles get a one-shot
+  `.cloudy-bubble-new` CSS class (`@keyframes cloudy-bubble-in`, opacity only,
+  220 ms), removed after it plays so an in-place rebuild won't replay it.
+- **Caching/perf (reviewed, already good)**: chat list, each thread, members and
+  contacts are cached on `app.cache` (stale-while-revalidate, 90 s) — switching
+  chats is instant then revalidates. Client calls **paginate** (`$top=50` chats,
+  `$top=30` messages) and batch (presence, contacts) — nothing loads everything.
+  The cache is **in-memory only** (cleared on restart); persisting it to disk for
+  an instant cold start is a possible future win, not done.
+
 ## ⏭ Continue here — Chat capability + UX session (2026-06-15, later)
 
 A large session that added a **Chat capability** (Teams chats / Google Chat) and
@@ -43,10 +88,12 @@ A 4th capability alongside Files/Mail/Calendar. Wired exactly like the others:
   ("Load older conversations"); **filter by name** (type) + **server-side message
   search** (Enter → Graph `/search/query` chatMessage → hit rows open the chat).
 - **Thread**: bubbles (mine right/accent), oldest-first, **older-message
-  pagination** (top button), reliably **pins to bottom** on open (a `changed`
-  re-pin + a real `EventControllerScroll` for user-scroll detection — do NOT use
-  `value-changed`, it races layout and lands mid-thread). Empty/system messages
-  are skipped so a bare timestamp never shows as its own bubble.
+  pagination** (top button + auto-load near the top), reliably **pins to bottom**
+  on open. (Scroll handling was reworked in the *latest* session — see the top
+  section. The state is now derived from the adjustment's `value-changed`, with a
+  `changed` re-pin and a per-frame `_hold_position` settle; the old
+  `EventControllerScroll` is gone.) Empty/system messages are skipped so a bare
+  timestamp never shows as its own bubble.
 - **Compose**: Enter sends (no send button — removed by request). **Attach button**
   (paperclip, `Gtk.FileDialog`, images) + **Ctrl+V paste** both *stage* a
   thumbnail in a strip; caption optional; sent on Enter. Images go as Teams
@@ -55,8 +102,9 @@ A 4th capability alongside Files/Mail/Calendar. Wired exactly like the others:
   `@Name`, recorded; on send builds HTML `<at id>` tags + the `mentions[]` array.
 - **Per-message right-click menu**: emoji **reaction** row (`setReaction`), Reply
   (inline quote via a context bar), Forward (opens New Chat prefilled), Copy,
-  Edit (own, `PATCH`), Delete (own, `softDelete`). Reactions display as chips
-  under bubbles.
+  **Select** (enter multi-select), **Download** (attachments), **Copy link**
+  (`web_url`), Edit (own, `PATCH`), Delete (own, `softDelete`). Reactions display
+  as chips under bubbles.
 - **Inline images**: downloaded with the bearer token (hosted-content URLs need
   auth — a plain open 401s), **downscaled to a 240px thumbnail** (`_thumb_texture`;
   a `Gtk.Picture`'s natural size = its paintable's, so scale the *pixbuf*, not
@@ -99,13 +147,21 @@ them forces existing accounts to Sign Out → Sign In once**.
 - **Teal accent**: `data/style.css` overrides `@accent_bg_color`/`accent_fg_color`/
   `accent_color` (`#2190a4`) at APPLICATION priority.
 
+### Shipped since (was deferred, now built)
+- **Group-chat creation + member management** — `start_group_chat`
+  (`POST /chats`, group) from the New-chat composer with 2+ recipients; the
+  conversation header's **people button** opens a roster popover to **rename**
+  (`rename_chat`), **add** (`add_chat_member`) and **remove** (`remove_chat_member`)
+  members, each with a presence dot.
+- **Presence dots** (`get_presences` → `POST /communications/getPresencesByUserId`,
+  `Presence.Read`): Teams-style dot on 1:1 chat avatars + the conversation header
+  subtitle, batch-refreshed every 60 s and patched in place (no list rebuild).
+- **Multi-select** in the thread (Shift-click a bubble) → a select bar to
+  **Forward / Copy / Delete** several messages at once.
+
 ### Next / deferred (asked for, not yet built)
-- **Group-chat creation + member management** (add/remove/rename) — Graph
-  `POST /chats` (group) + `/chats/{id}/members`.
 - **Arbitrary file attachments** (non-image: PDFs/docs) — OneDrive upload then
   reference as a `reference` attachment.
-- **Presence dots** (online/away) — `POST /communications/getPresencesByUserId`
-  (`Presence.Read`).
 - **Forward into an existing chat** (chat picker) — today Forward opens a *new*
   chat prefilled.
 - **Google Chat**: image send, edit, reactions, member list, message search are

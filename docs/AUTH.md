@@ -29,7 +29,11 @@ Tokens are stored via **libsecret**, never in plaintext.
    - Files: `Files.ReadWrite.All`, `Sites.ReadWrite.All`
    - Mail/Calendar/Contacts: `Mail.ReadWrite`, `Calendars.ReadWrite`,
      `Contacts.ReadWrite`
+   - Chat (Teams, work/school accounts): `Chat.ReadWrite`
    - Always: `User.Read`, `offline_access`, `openid`, `profile`
+
+   All scopes are requested **up front in one consent**, so adding a capability
+   (e.g. Chat) forces existing accounts to **Sign Out → Sign In** to re-consent.
 
 ### Auth flow — system browser + loopback (primary)
 
@@ -82,11 +86,20 @@ setting / `CLOUDY_GOOGLE_CLIENT_ID` env.
 One-time setup for the project maintainer:
 
 1. Create a **Google Cloud project** and an **OAuth client** (Desktop app type).
-2. Enable the Gmail API and Google Calendar API.
-3. Scopes (read-only for now): `gmail.readonly`, `calendar.readonly`, plus
-   `openid email profile`.
+2. Enable the Gmail API, Google Calendar API, People API and Google Chat API.
+3. Scopes (all requested up front, in one consent):
+   - Mail: `gmail.modify`, `gmail.send`
+   - Calendar: `calendar.events`
+   - Contacts (autocomplete): `contacts.readonly`, `contacts.other.readonly`
+   - Chat (**Workspace accounts only**): `chat.spaces.readonly`,
+     `chat.messages` — these are **restricted** scopes, so Google app
+     verification is required before non-test users can consent; on a consumer
+     Gmail account the Chat API is unavailable and the Chat view degrades to a
+     clear "needs a Workspace account" message.
+   - Always: `openid email profile`
 4. The installed-app flow uses a loopback redirect (`http://localhost:<port>`)
-   with PKCE; the refresh token is kept in libsecret.
+   with PKCE; the refresh token is kept in libsecret. Adding a scope forces
+   existing accounts to re-consent (Sign Out → Sign In).
 
 ## Why not EWS / Evolution-EWS?
 
