@@ -33,7 +33,7 @@ for mail/calendar) rather than reimplementing them. Read `docs/ARCHITECTURE.md`,
      doubling poll traffic — now a one-shot `_prime_once` returning `False`.
 - **App-ID rename** `io.github.sha5b.Clouddrive` → **`io.github.sha5b.Cloudy`**
   (data files, schema id, D-Bus name/paths, icons, gresource prefix, Makefile,
-  uninstall script). Repo URLs kept as `Clouddrive-Fedora` (repo renamed later).
+  uninstall script). Repo URLs kept as `Cloudy` (repo renamed later).
   Best-effort dconf migration in `application._migrate_legacy_settings` carries
   accounts/prefs over (works on host/RPM; Flatpak runtime has no `dconf` CLI →
   re-add accounts there once).

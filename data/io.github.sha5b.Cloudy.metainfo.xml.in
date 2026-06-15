@@ -44,9 +44,9 @@ SPDX-FileCopyrightText: 2026 Shahab Nedaei
 
   <content_rating type="oars-1.1" />
 
-  <url type="homepage">https://github.com/sha5b/Clouddrive-Fedora</url>
-  <url type="bugtracker">https://github.com/sha5b/Clouddrive-Fedora/issues</url>
-  <url type="vcs-browser">https://github.com/sha5b/Clouddrive-Fedora</url>
+  <url type="homepage">https://github.com/sha5b/Cloudy</url>
+  <url type="bugtracker">https://github.com/sha5b/Cloudy/issues</url>
+  <url type="vcs-browser">https://github.com/sha5b/Cloudy</url>
 
   <keywords>
     <keyword>OneDrive</keyword>
@@ -71,19 +71,19 @@ SPDX-FileCopyrightText: 2026 Shahab Nedaei
 
   <screenshots>
     <screenshot type="default">
-      <image>https://raw.githubusercontent.com/sha5b/Clouddrive-Fedora/main/data/screenshots/calendar.png</image>
+      <image>https://raw.githubusercontent.com/sha5b/Cloudy/main/data/screenshots/calendar.png</image>
       <caption>A month calendar and agenda across all your accounts</caption>
     </screenshot>
     <screenshot>
-      <image>https://raw.githubusercontent.com/sha5b/Clouddrive-Fedora/main/data/screenshots/files-libraries.png</image>
+      <image>https://raw.githubusercontent.com/sha5b/Cloudy/main/data/screenshots/files-libraries.png</image>
       <caption>OneDrive, SharePoint and Teams libraries mounted as live drives</caption>
     </screenshot>
     <screenshot>
-      <image>https://raw.githubusercontent.com/sha5b/Clouddrive-Fedora/main/data/screenshots/mail.png</image>
+      <image>https://raw.githubusercontent.com/sha5b/Cloudy/main/data/screenshots/mail.png</image>
       <caption>Unified mail with Me, Teams and Shared sources</caption>
     </screenshot>
     <screenshot>
-      <image>https://raw.githubusercontent.com/sha5b/Clouddrive-Fedora/main/data/screenshots/files-browser.png</image>
+      <image>https://raw.githubusercontent.com/sha5b/Cloudy/main/data/screenshots/files-browser.png</image>
       <caption>Browse mounted libraries inside the app</caption>
     </screenshot>
   </screenshots>

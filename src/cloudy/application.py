@@ -305,8 +305,8 @@ class CloudyApplication(Adw.Application):
             developer_name=_("Shahab Nedaei"),
             version=self.version,
             license_type=Gtk.License.GPL_3_0,
-            website="https://github.com/sha5b/Clouddrive-Fedora",
-            issue_url="https://github.com/sha5b/Clouddrive-Fedora/issues",
+            website="https://github.com/sha5b/Cloudy",
+            issue_url="https://github.com/sha5b/Cloudy/issues",
             copyright="© 2026 Shahab Nedaei",
         )
         about.present(self.props.active_window)

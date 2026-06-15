@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<!--
+SPDX-License-Identifier: GPL-3.0-or-later
+SPDX-FileCopyrightText: 2026 Shahab Nedaei
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cloudy — OneDrive, SharePoint & unified mail on Linux</title>
+  <meta name="description" content="A native GTK4/Libadwaita app bringing Microsoft 365 (OneDrive, SharePoint, Teams, Mail, Calendar) and Google (Gmail, Calendar, Drive) into one GNOME-native window on Fedora." />
+  <meta property="og:title" content="Cloudy" />
+  <meta property="og:description" content="Microsoft 365 and Google — OneDrive, SharePoint, mail and calendar — in one GNOME-native app." />
+  <meta property="og:image" content="https://raw.githubusercontent.com/sha5b/Cloudy/main/docs/assets/calendar.png" />
+  <meta property="og:type" content="website" />
+  <link rel="icon" href="assets/favicon.ico" sizes="any" />
+  <link rel="icon" type="image/png" href="assets/favicon-32.png" />
+  <link rel="stylesheet" href="assets/site.css" />
+</head>
+<body>
+
+  <header class="hero">
+    <img class="logo" src="assets/logo.svg" alt="Cloudy logo" />
+    <h1>Cloudy</h1>
+    <p class="tagline">Microsoft&nbsp;365 and Google — OneDrive, SharePoint, mail and calendar — in one GNOME-native window.</p>
+    <div class="badges">
+      <span class="badge">GTK4 · Libadwaita</span>
+      <span class="badge">Fedora 44 · GNOME 50</span>
+      <span class="badge">Flatpak &amp; RPM</span>
+      <span class="badge">GPL-3.0-or-later</span>
+    </div>
+    <div class="cta">
+      <a class="btn primary" href="https://github.com/sha5b/Cloudy/releases">Download</a>
+      <a class="btn ghost" href="https://github.com/sha5b/Cloudy">View on GitHub</a>
+    </div>
+  </header>
+
+  <section id="features">
+    <div class="wrap">
+      <h2>One app for your cloud</h2>
+      <p class="lead">Cloudy orchestrates proven backends — rclone for file mounts, Microsoft&nbsp;Graph and Google&nbsp;REST for mail and calendar — behind one adaptive interface.</p>
+      <div class="features">
+        <div class="feature">
+          <h3>Live file mounts</h3>
+          <p>OneDrive, SharePoint and Teams libraries mount as two-way network drives in GNOME Files and an in-app browser — not synced copies.</p>
+        </div>
+        <div class="feature">
+          <h3>Unified mail</h3>
+          <p>Read, compose and reply across Microsoft and Google, with Me / Teams / Shared mailbox sources in one place.</p>
+        </div>
+        <div class="feature">
+          <h3>Calendar &amp; agenda</h3>
+          <p>A month grid and agenda spanning every account, with event create, edit, delete and RSVP.</p>
+        </div>
+        <div class="feature">
+          <h3>Dashboard</h3>
+          <p>Upcoming events, recent mail and recent file changes aggregated across all your accounts at a glance.</p>
+        </div>
+        <div class="feature">
+          <h3>Desktop integration</h3>
+          <p>Acts as the system mail and calendar handler, raises new-mail notifications, and shows status in the file manager.</p>
+        </div>
+        <div class="feature">
+          <h3>Private by default</h3>
+          <p>OAuth tokens are stored in the system keyring — never in plain text. No third-party servers; the repo ships zero secrets.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="screenshots">
+    <div class="wrap">
+      <h2>See it</h2>
+      <p class="lead">Microsoft&nbsp;365 and Google, side by side.</p>
+      <div class="shots">
+        <figure class="shot">
+          <img src="assets/calendar.png" alt="Month calendar and agenda" loading="lazy" />
+          <figcaption>A month calendar and agenda across all your accounts.</figcaption>
+        </figure>
+        <figure class="shot">
+          <img src="assets/files-libraries.png" alt="OneDrive, SharePoint and Teams libraries" loading="lazy" />
+          <figcaption>OneDrive, SharePoint and Teams libraries mounted as live drives.</figcaption>
+        </figure>
+        <figure class="shot">
+          <img src="assets/mail.png" alt="Unified mail with Me, Teams and Shared sources" loading="lazy" />
+          <figcaption>Unified mail with Me, Teams and Shared sources.</figcaption>
+        </figure>
+        <figure class="shot">
+          <img src="assets/files-browser.png" alt="In-app file browser" loading="lazy" />
+          <figcaption>Browse mounted libraries inside the app.</figcaption>
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <section id="install" class="install">
+    <div class="wrap">
+      <h2>Install</h2>
+      <p class="lead">Built and tested for Fedora&nbsp;44 (GNOME&nbsp;50).</p>
+      <p>Flatpak (single-file bundle from a <a href="https://github.com/sha5b/Cloudy/releases">release</a>):</p>
+      <pre>flatpak install --user ./io.github.sha5b.Cloudy.flatpak</pre>
+      <p>RPM:</p>
+      <pre>sudo dnf install ./cloudy-*.noarch.rpm</pre>
+      <p>From source:</p>
+      <pre>git clone https://github.com/sha5b/Cloudy.git
+cd Cloudy
+make run</pre>
+      <p class="note">Cloudy ships no OAuth credentials in source; see the repository's docs for setup.</p>
+    </div>
+  </section>
+
+  <footer>
+    <p>
+      <a href="privacy.html">Privacy Policy</a> ·
+      <a href="terms.html">Terms of Service</a> ·
+      <a href="https://github.com/sha5b/Cloudy/blob/main/COPYING">License (GPL-3.0)</a>
+    </p>
+    <p>Cloudy — free software under the GNU GPL v3.0 or later.
+      Made by <a href="https://github.com/sha5b">Shahab Nedaei</a>.
+      Not affiliated with Microsoft or Google.</p>
+  </footer>
+
+</body>
+</html>

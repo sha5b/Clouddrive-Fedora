@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<!--
+SPDX-License-Identifier: GPL-3.0-or-later
+SPDX-FileCopyrightText: 2026 Shahab Nedaei
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cloudy — Privacy Policy</title>
+  <meta name="description" content="Privacy Policy for the Cloudy desktop application." />
+  <link rel="icon" href="assets/favicon.ico" sizes="any" />
+  <link rel="icon" type="image/png" href="assets/favicon-32.png" />
+  <link rel="stylesheet" href="assets/site.css" />
+  <style>
+    .legal { max-width: 760px; margin: 0 auto; padding: 64px 24px 80px; }
+    .legal h1 { font-size: 2.2rem; letter-spacing: -0.01em; margin-bottom: 4px; }
+    .legal .updated { color: var(--fg-dim); margin-top: 0; }
+    .legal h2 { font-size: 1.3rem; margin-top: 40px; }
+    .legal p, .legal li { color: #d8d8d8; }
+    .legal a.home { color: var(--fg-dim); font-size: .92rem; }
+  </style>
+</head>
+<body>
+  <main class="legal">
+    <p><a class="home" href="index.html">&larr; Cloudy</a></p>
+    <h1>Privacy Policy</h1>
+    <p class="updated">Last updated: 15 June 2026</p>
+
+    <p>
+      Cloudy is a free, open-source desktop application that runs entirely on your
+      own computer. It connects directly to the services you sign in to —
+      Microsoft 365 (via the Microsoft Graph API) and Google (via the Gmail,
+      Google Calendar and Google Drive APIs). There is no Cloudy server, and the
+      developer does not operate any backend that your data passes through.
+    </p>
+
+    <h2>What data Cloudy accesses</h2>
+    <p>
+      When you sign in to an account, Cloudy requests, with your consent, access
+      to the parts of that account you choose to use:
+    </p>
+    <ul>
+      <li><strong>Files</strong> — OneDrive, SharePoint and Teams libraries (Microsoft) and Google Drive, so they can be mounted and browsed.</li>
+      <li><strong>Mail</strong> — reading, composing and sending messages.</li>
+      <li><strong>Calendar</strong> — reading and managing events.</li>
+      <li><strong>Contacts</strong> — read-only, to suggest recipients while composing.</li>
+      <li><strong>Profile</strong> — your name and email address, to label the account.</li>
+    </ul>
+
+    <h2>How your data is used</h2>
+    <p>
+      Your data is used only on your device, only to provide the features you
+      use — displaying your mail and calendar, mounting and browsing your files,
+      and sending messages or events you create. Cloudy does not sell, share, or
+      transmit your data to the developer or any third party. It contains no
+      analytics, tracking or telemetry.
+    </p>
+    <p>
+      Files mounted by Cloudy stream directly between your computer and your
+      cloud provider (using <a href="https://rclone.org/">rclone</a>); they are
+      not routed through any other party.
+    </p>
+
+    <h2>Where your data is stored</h2>
+    <ul>
+      <li><strong>Authentication tokens</strong> are stored securely in your operating system's keyring (libsecret / the Secret Service), never in plain text.</li>
+      <li><strong>A local cache</strong> of recently viewed mail/calendar items and mounted files may be kept on your device to make the app responsive and to support offline access. This never leaves your device.</li>
+      <li>No personal data is stored on any server operated by the developer.</li>
+    </ul>
+
+    <h2>Sharing with the cloud providers</h2>
+    <p>
+      Because Cloudy talks directly to Microsoft and Google, your use of those
+      services is also governed by their privacy policies:
+      <a href="https://privacy.microsoft.com/privacystatement">Microsoft Privacy Statement</a>
+      and <a href="https://policies.google.com/privacy">Google Privacy Policy</a>.
+      Cloudy's use of information received from Google APIs adheres to the
+      <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>,
+      including its Limited Use requirements.
+    </p>
+
+    <h2>Your control</h2>
+    <ul>
+      <li>Sign out of an account in Cloudy at any time to delete its stored tokens from your keyring.</li>
+      <li>Revoke Cloudy's access entirely from your <a href="https://myaccount.google.com/permissions">Google account permissions</a> or <a href="https://account.live.com/consent/Manage">Microsoft account permissions</a>.</li>
+      <li>Uninstalling Cloudy removes its local cache and configuration.</li>
+    </ul>
+
+    <h2>Children</h2>
+    <p>Cloudy is not directed at children and does not knowingly collect data from children.</p>
+
+    <h2>Changes</h2>
+    <p>
+      This policy may be updated as the application evolves. Material changes will
+      be reflected on this page with a new "last updated" date.
+    </p>
+
+    <h2>Contact</h2>
+    <p>
+      Questions can be raised on the project's
+      <a href="https://github.com/sha5b/Cloudy/issues">issue tracker</a>.
+    </p>
+  </main>
+</body>
+</html>

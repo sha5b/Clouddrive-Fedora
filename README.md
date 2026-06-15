@@ -3,90 +3,106 @@ SPDX-License-Identifier: GPL-3.0-or-later
 SPDX-FileCopyrightText: 2026 Shahab Nedaei
 -->
 
+<div align="center">
+
+<img src="data/icons/hicolor/256x256/apps/io.github.sha5b.Cloudy.png" width="128" alt="Cloudy logo" />
+
 # Cloudy
 
-A native **GTK4 / Libadwaita** super-app for Fedora that brings Microsoft
-**365** (OneDrive + Teams/SharePoint, Mail, Calendar) and **Google** (Gmail,
-Calendar, Drive) into one GNOME-native window — with file-manager (Nautilus)
-integration, live network-drive mounts, and a unified, provider-agnostic
-**mail + calendar** surface.
+**Microsoft 365 and Google — OneDrive, SharePoint, mail and calendar — in one GNOME-native window.**
 
-> Status: **working app.** Sign-in (Microsoft + Google), Files (mount/unmount +
-> an in-app browser), Mail and Calendar (read, compose/reply, RSVP, create/edit/
-> delete events), a Dashboard, and desktop/Nautilus integration are all
-> functional. Packaged as both an **RPM** and a single-file **Flatpak**. See
-> [docs/HANDOFF.md](docs/HANDOFF.md) for the detailed status and the open backlog.
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](COPYING)
+![Platform](https://img.shields.io/badge/Fedora%2044-GNOME%2050-3584e4)
+![Toolkit](https://img.shields.io/badge/GTK4-Libadwaita-purple)
+![Packaging](https://img.shields.io/badge/Flatpak-%26%20RPM-success)
+
+[**Website**](https://sha5b.github.io/Cloudy/) · [**Download**](https://github.com/sha5b/Cloudy/releases) · [Privacy](https://sha5b.github.io/Cloudy/privacy.html) · [Terms](https://sha5b.github.io/Cloudy/terms.html)
+
+</div>
+
+---
+
+A native **GTK4 / Libadwaita** super-app for Fedora that brings **Microsoft 365**
+(OneDrive + Teams/SharePoint, Mail, Calendar) and **Google** (Gmail, Calendar,
+Drive) into one window — with file-manager (Nautilus) integration, live
+network-drive mounts, and a unified, provider-agnostic **mail + calendar** surface.
 
 Cloudy does **not** reinvent sync engines. It *orchestrates* proven backends —
-`rclone` for the FUSE file mounts (with [`onedriver`](https://github.com/jstaf/onedriver)
-as an alternate), and **Microsoft Graph** / **Google REST** for mail & calendar —
-behind one adaptive UI inspired by [Alpaca](https://github.com/Jeffser/Alpaca).
+`rclone` for the FUSE file mounts, and **Microsoft Graph** / **Google REST** for
+mail & calendar — behind one adaptive UI.
+
+## Screenshots
+
+| Calendar | Files |
+|---|---|
+| ![Calendar](data/screenshots/calendar.png) | ![Files](data/screenshots/files-libraries.png) |
+
+| Mail | In-app browser |
+|---|---|
+| ![Mail](data/screenshots/mail.png) | ![Browser](data/screenshots/files-browser.png) |
 
 ## Features
 
 - **Microsoft 365** (OneDrive + Teams/SharePoint libraries) and **Google**
   (Gmail, Calendar, My Drive) accounts side by side.
-- **Files** = live `rclone` FUSE mounts (two-way network drives, not synced
-  copies) that appear in Nautilus and an in-app file browser. Optional offline
-  `bisync` for full-copy accounts.
+- **Files** as live `rclone` FUSE mounts — two-way network drives that appear in
+  GNOME Files and an in-app browser (not synced copies). Optional offline sync.
 - **Mail**: read (HTML), compose, reply/reply-all, with **Me / Teams / Shared**
-  mailbox sources (Microsoft) and contacts autocomplete.
+  mailbox sources and contacts autocomplete.
 - **Calendar**: month grid + agenda, event detail with an attendee response
-  tracker and RSVP, and **create / inline-edit / delete** events.
+  tracker, and **create / edit / delete** events + RSVP.
 - **Dashboard**: pinned sources, upcoming events, recent mail, and recent file
   changes aggregated across every account.
-- **Desktop integration**: acts as the system `mailto:` / `.ics` handler, raises
-  notifications for new mail and upcoming events, and a Nautilus extension draws
-  status emblems + Unmount/Copy-share-link menu items.
-- **Secrets** stored via **libsecret** — never plaintext. OAuth client IDs are
-  baked at build time or supplied via `.env` (see [docs/SECRETS.md](docs/SECRETS.md)).
-- Packaged as a **Flatpak** (`org.gnome.Platform` 50) and an **RPM**.
+- **Desktop integration**: system `mailto:` / `.ics` handler, new-mail/event
+  notifications, and a Nautilus extension for status emblems.
+- **Secrets** stored via **libsecret** — never plaintext. No telemetry; the
+  committed repo ships zero credentials.
 
-## Platform
+## Install
 
-Built and tested for **Fedora 44 (GNOME 50)**. See [docs/BUILDING.md](docs/BUILDING.md).
+Built and tested for **Fedora 44 (GNOME 50)**.
 
-## Quick start (development)
+```bash
+# Flatpak (single-file bundle from a release):
+flatpak install --user ./io.github.sha5b.Cloudy.flatpak
 
-Reproducible from a clean Fedora 44 checkout:
+# RPM:
+sudo dnf install ./cloudy-*.noarch.rpm
+```
+
+See the [releases page](https://github.com/sha5b/Cloudy/releases).
+
+## Build from source
 
 ```bash
 # 1. Install everything (toolchain + host backends + Flatpak runtime):
-make bootstrap                 # == ./scripts/bootstrap-fedora.sh --all
+make bootstrap
 
 # 2a. Build, install, and run locally:
 make run
 
-# 2b. …or build + run as a sandboxed Flatpak (pinned GNOME 50 runtime):
+# 2b. …or build a sandboxed Flatpak:
 make flatpak flatpak-run
 
-# 2c. …or build distributable artifacts (RPM + single-file .flatpak) into
-#     release/ and install the bundle so the running app matches:
+# 2c. …or build distributable artifacts (RPM + .flatpak) into release/:
 make release
 ```
 
-Common targets: `make build`, `make test`, `make lint`, `make clean`,
-`make rpm`, `make flatpak-bundle`. Artifacts under `release/` embed baked
-credentials and are gitignored. See [docs/BUILDING.md](docs/BUILDING.md) and the
-[Makefile](Makefile).
+Common targets: `make build`, `make test`, `make lint`, `make clean`. Dev
+toolchain is user-space (`meson`/`ninja` via `pip --user`). OAuth client IDs are
+baked at build time or supplied via `.env` — see [docs/SECRETS.md](docs/SECRETS.md).
 
-## Continuing development
+## Documentation
 
-Resuming in a new session? Start with **[docs/HANDOFF.md](docs/HANDOFF.md)** —
-current status, how things work, gotchas, and the next-steps backlog.
+- [docs/HANDOFF.md](docs/HANDOFF.md) — current status, gotchas, backlog
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [docs/AUTH.md](docs/AUTH.md) · [docs/SECRETS.md](docs/SECRETS.md) · [docs/BUILDING.md](docs/BUILDING.md) · [docs/MODULES.md](docs/MODULES.md) · [docs/ROADMAP.md](docs/ROADMAP.md)
 
-## Architecture
+## Legal
 
-A Libadwaita navigation-split-view shell + a module/plugin engine. Each service
-(OneDrive, Graph mail/calendar, Gmail) is a self-contained module implementing
-capability interfaces. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+- [Privacy Policy](https://sha5b.github.io/Cloudy/privacy.html) · [Terms of Service](https://sha5b.github.io/Cloudy/terms.html)
+- Licensed under the **GNU General Public License v3.0 or later** — see [COPYING](COPYING). Each source file carries an SPDX identifier.
+- Cloudy is an independent project, **not affiliated with Microsoft or Google**. All trademarks belong to their respective owners.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) and our [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
-
-## License
-
-Cloudy is free software, licensed under the **GNU General Public License
-v3.0 or later**. See [COPYING](COPYING). Each source file carries an SPDX
-identifier.
+See [CONTRIBUTING.md](CONTRIBUTING.md) and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).

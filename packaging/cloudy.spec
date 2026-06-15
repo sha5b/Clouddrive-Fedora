@@ -18,7 +18,7 @@ Release:        1%{?dist}
 Summary:        Use OneDrive, SharePoint and unified mail on your desktop
 
 License:        GPL-3.0-or-later
-URL:            https://github.com/sha5b/Clouddrive-Fedora
+URL:            https://github.com/sha5b/Cloudy
 Source0:        %{name}-%{version}.tar.gz
 
 BuildArch:      noarch

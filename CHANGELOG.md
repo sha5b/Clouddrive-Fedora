@@ -114,4 +114,4 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   dialog instead of a silent toast; Google sign-in opens the browser via the
   portal-aware launcher on the main thread.
 
-[Unreleased]: https://github.com/sha5b/Clouddrive-Fedora
+[Unreleased]: https://github.com/sha5b/Cloudy
