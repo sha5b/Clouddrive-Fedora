@@ -19,12 +19,13 @@ from gi.repository import Adw, Gio, GLib, Gtk, Pango
 
 from ..modules.microsoft365.mounts import (
     MountManager,
-    account_mount_base,
+    mount_base_for,
     mount_root,
     sync_root,
 )
 from .event_window import EventDetailWindow
 from .file_browser import recent_changes
+from .metrics import SPACE_L, SPACE_M
 from .month_grid import MonthGrid
 from .source_nav import run_async
 
@@ -205,11 +206,9 @@ class DashboardView(Adw.Bin):
     def _count_mounted(accounts) -> int:
         # Count via the kernel mount table (stall-proof) rather than statting
         # each child with os.path.ismount, which can block on a hung FUSE mount.
-        roots = {str(mount_root())}
+        roots = {str(mount_root())}  # backward-compat with any flat (pre-namespacing) mounts
         for account in accounts:
-            base = account_mount_base(account.mount_location)
-            if base is not None:
-                roots.add(str(base))
+            roots.add(str(mount_base_for(account)))
         return sum(1 for mp in MountManager.active_mounts()
                    if os.path.dirname(mp) in roots)
 
@@ -242,9 +241,7 @@ class DashboardView(Adw.Bin):
     def _scan_roots(self, accounts) -> list:
         roots = [mount_root(), sync_root()]
         for account in accounts:
-            base = account_mount_base(account.mount_location)
-            if base is not None:
-                roots.append(base)
+            roots.append(mount_base_for(account))
         return roots
 
     def _on_loaded(self, data) -> bool:
@@ -274,8 +271,8 @@ class DashboardView(Adw.Bin):
     def _section_page(self) -> tuple[Gtk.Widget, callable]:
         """A full-width scrolling section (vs. Adw.PreferencesPage, which clamps
         content to a narrow centred column). Returns (scroller, add_group)."""
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18,
-                      margin_top=18, margin_bottom=18, margin_start=24, margin_end=24)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=SPACE_L)
+        box.add_css_class("cloudy-section")
         scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER,
                                       vexpand=True, child=box)
         return scroller, box.append
@@ -308,11 +305,11 @@ class DashboardView(Adw.Bin):
                            if (e.get("start", "") or "").startswith(today))
         mounted = self._data.get("mounted", 0)
 
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18,
-                      margin_top=18, margin_bottom=18, margin_start=24, margin_end=24)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=SPACE_L)
+        box.add_css_class("cloudy-section")
 
         # Stat cards (clickable → jump to the matching section).
-        stats = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12,
+        stats = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=SPACE_M,
                         homogeneous=True)
         stats.append(self._stat(unread, _("Unread"), "mail-unread-symbolic", "mail"))
         stats.append(self._stat(events_today, _("Events today"),
