@@ -84,6 +84,9 @@ class ComposeWindow(EditorWindow):
         completion.pack_start(renderer, True)
         completion.add_attribute(renderer, "text", 0)
         completion.set_match_func(self._match)
+        completion.set_minimum_key_length(1)
+        completion.set_popup_completion(True)
+        completion.set_popup_single_match(True)
         completion.connect("match-selected", self._on_match_selected)
         self._to.set_completion(completion)
 

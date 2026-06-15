@@ -19,6 +19,12 @@ RPM_TOP     := $(CURDIR)/_build/rpm
 RPM_TARBALL := $(RPM_TOP)/SOURCES/cloudy-$(VERSION).tar.gz
 SPEC        := packaging/cloudy.spec
 
+# Distributable artifacts. NOTE: these embed baked credentials (per the
+# bake-at-build-time model), so RELEASE_DIR is gitignored — never commit it.
+RELEASE_DIR    := release
+FLATPAK_REPO   := _build/flatpak/repo
+FLATPAK_BUNDLE := $(RELEASE_DIR)/$(APP_ID).flatpak
+
 # Build-time credentials, sourced from .env when present. Both RPM and Flatpak
 # read these; absent .env -> a credential-free build (no secrets, manual setup).
 # Wrapped so the secret only enters the recipe shell, never the make environment.
@@ -26,7 +32,7 @@ LOAD_ENV    := set -a; [ -f .env ] && . ./.env; set +a;
 
 .PHONY: all bootstrap setup build install run clean distclean \
         flatpak flatpak-run flatpak-test lint test install-nautilus \
-        uninstall-nautilus rpm srpm dist-tarball
+        uninstall-nautilus rpm srpm dist-tarball release flatpak-bundle
 
 all: build
 
@@ -114,6 +120,41 @@ flatpak-test:
 ## Run the installed Flatpak
 flatpak-run:
 	flatpak run $(APP_ID)
+
+## Export a single-file, installable .flatpak bundle (carries the app + icon).
+flatpak-bundle:
+	@mkdir -p $(FLATPAK_DIR) $(RELEASE_DIR)
+	@$(LOAD_ENV) python3 scripts/flatpak-local-manifest.py \
+	  $(APP_ID).yml $(CURDIR) $(FLATPAK_DIR)/$(APP_ID).local.yml
+	# Build and export into a local OSTree repo (no system install).
+	flatpak run \
+	  --env=GIT_CONFIG_COUNT=1 \
+	  --env=GIT_CONFIG_KEY_0=safe.bareRepository \
+	  --env=GIT_CONFIG_VALUE_0=all \
+	  org.flatpak.Builder --force-clean --install-deps-from=flathub \
+	  --repo=$(FLATPAK_REPO) \
+	  $(FLATPAK_DIR)/build $(FLATPAK_DIR)/$(APP_ID).local.yml
+	# Bundle the repo into one file; --runtime-repo tells installers where to
+	# fetch the GNOME runtime from (Flathub).
+	flatpak build-bundle \
+	  --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo \
+	  $(FLATPAK_REPO) $(FLATPAK_BUNDLE) $(APP_ID)
+	@echo "Flatpak bundle: $(FLATPAK_BUNDLE)"
+
+## Collect distributable artifacts (RPM + .flatpak bundle) into release/.
+release: rpm flatpak-bundle
+	@mkdir -p $(RELEASE_DIR)
+	@cp $(RPM_TOP)/RPMS/noarch/*.rpm $(RELEASE_DIR)/
+	# Install the freshly built bundle so the *running* app matches the release
+	# (otherwise `make release` leaves the previously-installed build running).
+	@flatpak install --user --noninteractive --reinstall "$(FLATPAK_BUNDLE)" \
+	  || flatpak install --user --noninteractive "$(FLATPAK_BUNDLE)" || true
+	@echo; echo "=== release/ ==="; ls -lh $(RELEASE_DIR)
+	@echo
+	@echo "Installed the bundle to the user installation (running app == release)."
+	@echo "Share/install elsewhere:"
+	@echo "  RPM:     sudo dnf install ./$(RELEASE_DIR)/cloudy-*.rpm"
+	@echo "  Flatpak: flatpak install --user ./$(FLATPAK_BUNDLE)"
 
 ## Install the host-side Nautilus extension (runs outside the sandbox)
 install-nautilus:

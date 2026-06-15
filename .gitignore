@@ -21,6 +21,7 @@ client_secret*.json
 /_install/
 /.flatpak-builder/
 /repo/
+/release/
 *.flatpak
 
 # Meson subproject sources (kept as .wrap files only)

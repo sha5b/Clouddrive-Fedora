@@ -23,7 +23,9 @@ from ..modules.microsoft365.mounts import (
     mount_root,
     sync_root,
 )
+from .event_window import EventDetailWindow
 from .file_browser import recent_changes
+from .month_grid import MonthGrid
 from .source_nav import run_async
 
 
@@ -142,16 +144,29 @@ class DashboardView(Adw.Bin):
             row._badge.set_text(str(count) if count else "")
 
     # -- aggregation (off the UI thread) ---------------------------------
+    _CACHE_KEY = "dashboard:overview"
+
     def _load_async(self) -> None:
+        # Cache the whole aggregate on the (persistent) app cache so flipping to
+        # Overview renders instantly from cache; we only refetch when the cache
+        # is stale (>TTL) or on an explicit Refresh — not on every visit.
+        app = self._window.get_application()
+        cached = app.cache.get(self._CACHE_KEY)
+        if cached is not None:
+            self._on_loaded(cached[0])
+            if cached[1]:  # still fresh — don't hit the network
+                return
+
         now = datetime.now(timezone.utc)
         start_iso = now.strftime("%Y-%m-%dT%H:%M:%SZ")
-        end_iso = (now + timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        # ~5 weeks ahead so the dashboard month grid is populated (the Today
+        # previews still show only the soonest few).
+        end_iso = (now + timedelta(days=35)).strftime("%Y-%m-%dT%H:%M:%SZ")
         accounts = list(self._accounts)
 
         def work():
             from .clients import build_account_client
 
-            app = self._window.get_application()
             events, messages, pinned = [], [], []
             for account in accounts:
                 try:
@@ -165,15 +180,26 @@ class DashboardView(Adw.Bin):
                         messages.append((account, msg))
                 except Exception:  # noqa: BLE001 - one bad account shouldn't blank the view
                     pass
+                # Pinned shared/team sources: fold their upcoming events and
+                # unread mail into the overview too (not just a link).
                 for p in account.pinned_sources or []:
-                    pinned.append((account, p, self._pin_detail(client, p, start_iso, end_iso)))
+                    detail, p_events, p_msgs = self._pin_items(client, p, start_iso, end_iso)
+                    events.extend((account, e) for e in p_events)
+                    messages.extend((account, m) for m in p_msgs)
+                    pinned.append((account, p, detail))
             events.sort(key=lambda pair: pair[1].get("start", ""))
-            messages.sort(key=lambda pair: (pair[1].get("is_read", True),))
+            # Unread first; stable sort keeps the API's newest-first order within.
+            messages.sort(key=lambda pair: pair[1].get("is_read", True))
             files = recent_changes(self._scan_roots(accounts))
             return {"events": events, "messages": messages, "pinned": pinned,
                     "files": files, "mounted": self._count_mounted(accounts)}
 
-        run_async(work, lambda res, _error: self._on_loaded(res or {}))
+        def done(res, _error):
+            if res:
+                app.cache.set(self._CACHE_KEY, res)
+                self._on_loaded(res)
+
+        run_async(work, done)
 
     @staticmethod
     def _count_mounted(accounts) -> int:
@@ -188,14 +214,17 @@ class DashboardView(Adw.Bin):
                    if os.path.dirname(mp) in roots)
 
     @staticmethod
-    def _pin_detail(client, pin, start_iso, end_iso) -> str:
+    def _pin_items(client, pin, start_iso, end_iso):
+        """Fetch a pinned source's content. Returns (detail, events, unread_mail)
+        — events/unread are merged into the overview; detail labels the Pinned
+        row. Unread-only for mail so the overview isn't flooded."""
         try:
             if pin["kind"] == "calendar":
                 if pin["source"] == "teams":
                     evs = client.list_group_events(pin["id"], start_iso, end_iso)
                 else:
                     evs = client.list_shared_events(pin["id"], start_iso, end_iso)
-                return _("%d upcoming") % len(evs)
+                return _("%d upcoming") % len(evs), list(evs), []
             if pin["source"] == "teams":
                 msgs = client.list_messages(f"group:{pin['id']}")
             else:
@@ -203,10 +232,12 @@ class DashboardView(Adw.Bin):
                 inbox = next((f for f in folders if f["name"].lower() == "inbox"),
                              folders[0] if folders else None)
                 msgs = client.list_messages(inbox["id"]) if inbox else []
-            unread = sum(1 for m in msgs if not m.get("is_read", True))
-            return _("%d unread") % unread if unread else _("%d recent") % len(msgs)
+            unread_mail = [m for m in msgs if not m.get("is_read", True)]
+            detail = (_("%d unread") % len(unread_mail) if unread_mail
+                      else _("%d recent") % len(msgs))
+            return detail, [], unread_mail
         except Exception:  # noqa: BLE001
-            return ""
+            return "", [], []
 
     def _scan_roots(self, accounts) -> list:
         roots = [mount_root(), sync_root()]
@@ -323,21 +354,21 @@ class DashboardView(Adw.Bin):
         add(group)
 
     def _build_calendar(self) -> Gtk.Widget:
-        scroller, add = self._section_page()
-        self._pinned_group(add, kind="calendar")
-        events = self._data.get("events", [])
-        if not events:
-            empty = Adw.PreferencesGroup()
-            empty.add(Adw.ActionRow(title=_("No upcoming events.")))
-            add(empty)
-            return scroller
-        # Categorised by account; events within an account stay time-ordered.
-        for account, evs in self._by_account(events):
-            group = self._account_group(account)
-            for ev in evs:
-                group.add(self._event_row(account, ev))
-            add(group)
-        return scroller
+        # A real month grid across all accounts; clicking an event opens it in a
+        # window. Each event carries its account id so the click can route back.
+        grid = MonthGrid(on_event=self._open_event)
+        evs = []
+        for account, ev in self._data.get("events", []):
+            tagged = dict(ev)
+            tagged["_account_id"] = account.id
+            evs.append(tagged)
+        grid.set_events(evs)
+        return grid
+
+    def _open_event(self, ev) -> None:
+        account = self._registry.get(ev.get("_account_id", ""))
+        if account is not None and ev.get("id"):
+            EventDetailWindow(self._window, account, ev["id"]).present()
 
     def _build_mail(self) -> Gtk.Widget:
         scroller, add = self._section_page()

@@ -26,6 +26,7 @@ from ...core.auth.msal_graph import (
     SCOPES_GROUPS,
     SCOPES_MAIL,
     SCOPES_MAIL_SHARED,
+    SCOPES_PEOPLE,
     SCOPES_TEAMS,
 )
 
@@ -365,7 +366,7 @@ class GraphClient:
         scope_base, raw_id, scopes = self._message_scope(message_id)
         data = self._get(
             f"{scope_base}/messages/{raw_id}"
-            f"?$select=subject,from,toRecipients,receivedDateTime,body",
+            f"?$select=subject,from,toRecipients,receivedDateTime,body,bodyPreview",
             scopes,
         )
         sender = (data.get("from") or {}).get("emailAddress", {})
@@ -374,6 +375,12 @@ class GraphClient:
             for r in data.get("toRecipients", [])
         )
         body = data.get("body") or {}
+        # NB: meetingMessageType (which would let us synthesize a "X accepted"
+        # card) lives on the derived eventMessage type and isn't reachable via
+        # $select or an entity-cast on this Graph endpoint (both 400). So empty-
+        # bodied meeting notifications just fall back to the reader's
+        # "No message content" placeholder — see message_view.
+        meeting_response = ""
         return {
             "id": message_id,
             "subject": html.unescape(data.get("subject", "(no subject)")),
@@ -382,6 +389,10 @@ class GraphClient:
             "received": data.get("receivedDateTime", ""),
             "body": body.get("content", ""),
             "body_html": body.get("contentType") == "html",
+            # Server-rendered text preview — used as a fallback when the body is
+            # empty (e.g. meeting acceptance/decline notifications carry no body).
+            "preview": html.unescape(data.get("bodyPreview", "")),
+            "meeting_response": meeting_response,
         }
 
     @staticmethod
@@ -454,21 +465,43 @@ class GraphClient:
 
     # -- Contacts ---------------------------------------------------------
     def list_contacts(self, *, limit: int = 200) -> list[dict]:
-        """Personal contacts as ``[{name, email}]`` (one entry per address).
+        """People for To-field autocomplete as ``[{name, email}]``.
 
-        Uses the Contacts.ReadWrite scope already granted for mail, so no extra
-        consent is needed."""
-        data = self._get(
-            f"/me/contacts?$select=displayName,emailAddresses&$top={limit}",
-            SCOPES_MAIL,
-        )
-        out = []
-        for c in data.get("value", []):
-            name = c.get("displayName", "")
-            for ea in c.get("emailAddresses", []) or []:
-                addr = ea.get("address")
-                if addr:
-                    out.append({"name": name or ea.get("name", ""), "email": addr})
+        Primary source is the **People API** (``/me/people``) — relevance-ranked
+        colleagues + frequent contacts, including the org directory — because the
+        personal ``/me/contacts`` folder is empty for most business accounts. We
+        merge the personal contacts in too. Each source is best-effort so a
+        missing scope on one doesn't wipe out the other."""
+        out: list[dict] = []
+        seen: set[str] = set()
+
+        def add(name: str, addr: str) -> None:
+            key = (addr or "").lower()
+            if addr and key not in seen:
+                seen.add(key)
+                out.append({"name": name or addr, "email": addr})
+
+        try:
+            data = self._get(
+                f"/me/people?$select=displayName,scoredEmailAddresses&$top={limit}",
+                SCOPES_PEOPLE)
+            for p in data.get("value", []):
+                name = p.get("displayName", "")
+                for ea in p.get("scoredEmailAddresses", []) or []:
+                    add(name, ea.get("address"))
+        except GraphError:
+            pass  # People.Read not granted yet (account predates the scope)
+
+        try:
+            data = self._get(
+                f"/me/contacts?$select=displayName,emailAddresses&$top={limit}",
+                SCOPES_MAIL)
+            for c in data.get("value", []):
+                name = c.get("displayName", "")
+                for ea in c.get("emailAddresses", []) or []:
+                    add(name or ea.get("name", ""), ea.get("address"))
+        except GraphError:
+            pass
         return out
 
     # -- Calendar ---------------------------------------------------------
@@ -536,7 +569,11 @@ class GraphClient:
         attendees = []
         for a in data.get("attendees", []) or []:
             ea = a.get("emailAddress") or {}
-            attendees.append(ea.get("name") or ea.get("address", ""))
+            attendees.append({
+                "name": html.unescape(ea.get("name") or ea.get("address", "")),
+                # none|organizer|tentativelyAccepted|accepted|declined|notResponded
+                "response": (a.get("status") or {}).get("response", "none"),
+            })
         body = data.get("body") or {}
         response = (data.get("responseStatus") or {}).get("response", "none")
         return {
@@ -600,6 +637,34 @@ class GraphClient:
         if source == "shared" and address:
             return self._post(f"/users/{address}/events", event, SCOPES_MAIL_SHARED)
         return self._post("/me/events", event, SCOPES_MAIL)
+
+    def update_event(self, event_id: str, *, subject: str, start_iso: str,
+                     end_iso: str, location: str = "", body: str = "",
+                     attendees=None, all_day: bool = False, html: bool = False) -> dict:
+        """Edit an existing event (PATCH). Group/team events are read-only."""
+        if event_id.startswith("group:"):
+            raise GraphError("Group events can't be edited from here.")
+        event: dict = {
+            "subject": subject,
+            "start": {"dateTime": start_iso.rstrip("Z"), "timeZone": "UTC"},
+            "end": {"dateTime": end_iso.rstrip("Z"), "timeZone": "UTC"},
+            "isAllDay": all_day,
+        }
+        # PATCH leaves omitted fields untouched — so an empty body/location keeps
+        # the server's (don't wipe a meeting's body when only the time changed).
+        if location:
+            event["location"] = {"displayName": location}
+        if body:
+            event["body"] = {"contentType": "HTML" if html else "Text", "content": body}
+        if attendees:
+            event["attendees"] = [
+                {"emailAddress": {"address": a}, "type": "required"}
+                for a in attendees if a
+            ]
+        if event_id.startswith("shared:"):
+            _, address, eid = _split_id(event_id, 3)
+            return self._patch(f"/users/{address}/events/{eid}", event, SCOPES_MAIL_SHARED)
+        return self._patch(f"/me/events/{event_id}", event, SCOPES_MAIL)
 
     def delete_event(self, event_id: str) -> None:
         """Delete an event from its calendar (group/team events are read-only)."""

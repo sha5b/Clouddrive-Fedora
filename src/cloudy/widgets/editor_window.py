@@ -21,7 +21,10 @@ from gi.repository import Adw, Gtk
 class EditorWindow(Adw.Window):
     def __init__(self, parent, *, title: str, primary_label: str,
                  default_width: int = 640, default_height: int = 600):
-        super().__init__(transient_for=parent, modal=False)
+        # NOT transient_for: GNOME treats transient windows as dialogs and hides
+        # minimize/maximize. As an independent toplevel the user can park or
+        # expand it (the decoration layout below requests min/max/close).
+        super().__init__(modal=False)
         self.set_title(title)
         self.set_default_size(default_width, default_height)
 
@@ -32,6 +35,9 @@ class EditorWindow(Adw.Window):
         cancel.connect("clicked", lambda *_a: self.close())
 
         header = Adw.HeaderBar()
+        # Show minimize/maximize alongside close (these are real top-level
+        # windows the user may want to park or expand while working).
+        header.set_decoration_layout(":minimize,maximize,close")
         header.pack_start(cancel)
         header.pack_end(self.primary_btn)
 

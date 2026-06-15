@@ -104,7 +104,7 @@ class CloudyPreferences(Adw.PreferencesDialog):
 
         # Notifications & background behaviour.
         integ = Adw.PreferencesGroup(
-            title=_("Notifications & background"),
+            title=_("Notifications &amp; background"),
             description=_("How Cloudy talks to the rest of your desktop."),
         )
         page.add(integ)

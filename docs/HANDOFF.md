@@ -12,6 +12,83 @@ Calendar)** and **Google (Gmail, Calendar, Drive)** on Fedora 44 (GNOME 50). It
 for mail/calendar) rather than reimplementing them. Read `docs/ARCHITECTURE.md`,
 `docs/AUTH.md`, `docs/SECRETS.md`, `docs/ROADMAP.md` for depth.
 
+## ⏭ Continue here — latest session (2026-06-14)
+
+A very large session. **Everything below is built + reinstalled into the Flatpak,
+but NOT committed to git** — first task next time: review the working tree and
+commit on a branch (logical commits).
+
+### Done this session
+- **Rebrand**: `com.fiberelements.Cloudy` → **`io.github.sha5b.Clouddrive`**;
+  author → **Shahab Nedaei <ned.tabulov@gmail.com>** (sha5b). All file names,
+  schema id, D-Bus name/paths, icons renamed.
+- **Packaging**: Fedora **RPM** (`packaging/cloudy.spec`, noarch, meson),
+  `make rpm`/`srpm`; **Flatpak bundle** `make flatpak-bundle`; **`make release`**
+  → `release/` (RPM + single-file `.flatpak`) **and installs the bundle** so the
+  running app matches. `release/` is gitignored (artifacts embed baked creds).
+- **Credentials** baked at build time via `meson.options`
+  (`ms_client_id`/`google_client_id`/`google_client_secret`) → a generated
+  GSettings **vendor override** (`data/cloudy.gschema.override.in`); read from
+  `.env` by the Makefile. Source ships empty defaults. Security-audited: no
+  secrets in git history/tree.
+- **Host-visible Flatpak mounts**: rclone runs on the host via `flatpak-spawn
+  --host` into `~/.local/share/cloudy/mounts` (manifest grants
+  `--talk-name=org.freedesktop.Flatpak` + `--filesystem`). `mounts.active_mounts()`
+  reads `/proc/self/mountinfo` (stall-proof) — fixed the dashboard hang.
+- **Nautilus**: quick **Unmount (Cloudy)** menu item (file view, not sidebar —
+  API can't touch sidebar bookmarks); extension **auto-installs** (RPM → system
+  path; Flatpak → copied to host on first run via `provisioner.ensure_host_
+  nautilus_extension`). Fixed dotted D-Bus `OBJECT_PATH`.
+- **Calendar redesign**: month **grid** (`widgets/month_grid.py`) in the Calendar
+  tab + Dashboard; **past events** (loads the visible month); clicking an event
+  opens a **non-modal event window** (`widgets/event_window.py`) with detail +
+  RSVP + delete + **Edit**.
+- **Meeting responses**: attendee **response tracker** on the event (pills grouped
+  by status via `Adw.WrapBox`); empty-bodied accept/decline emails show a
+  placeholder (see gotcha below).
+- **Dashboard**: aggregate **cached** (stale-while-revalidate, no reload on every
+  switch) + a Refresh button; pinned sources' **unread mail + events merged**
+  into the overview.
+- **Contacts autocomplete**: MS via **People API** (`/me/people` + `/me/contacts`,
+  new `People.Read` scope); Google connections + **otherContacts** (new
+  `contacts.other.readonly`). Both need **re-sign-in** (see below).
+- **Account add** now auto-enables the provider's module (Google wasn't
+  activating — `enabled-modules` defaulted to microsoft365 only).
+- Fixes: WebKit blank mail (`WEBKIT_DISABLE_DMABUF_RENDERER=1` in `main.py` +
+  manifest); strip `cid:` inline images; `update_event` (Graph + Google) for the
+  Edit flow; non-transient editor/event windows so **minimize/maximize** show;
+  event-compose timezone (local→UTC); escaped `&` in a preferences title.
+
+### NEXT (asked for, deferred to here)
+1. **Inline event edit** — the Edit (✏️) button currently opens a *separate*
+   editor window (`event_compose.EventWindow`). The user wants to edit **inside
+   the event window**: toggle the detail into an edit form (subject, all-day,
+   day, start/end time, location, **removable attendees**, body) with Save/Cancel
+   in the header, then call `client.update_event(eid, …)`. **Blocker to wire
+   first**: `get_event` returns attendees as `{name, response}` — **add `email`**
+   (Graph `emailAddress.address`, Google `email`) so removing people can re-send
+   the full attendee email list (PATCH preserves attendees if omitted, so you
+   must send the desired list). `update_event` already exists on both clients and
+   omits empty body/location.
+2. **Contacts dropdown**: only suggests after **Sign Out → Sign In** per account
+   (grants `People.Read` / `contacts.other.readonly`). If it still doesn't show
+   after re-consent, `GtkEntryCompletion` is deprecated/flaky in GTK4 — replace
+   `compose_view._setup_completion` with a custom suggestion popover.
+3. **Commit** the session.
+
+### Gotchas learned this session
+- **Smoke-test by INSTANTIATING widgets**, not just importing — see
+  `[[cloudy-widget-smoke-test]]`. `Gtk.init_check()` works headless here; a
+  `monthdatescal` typo passed import but crashed `MonthGrid()`.
+- **`meetingMessageType`** can't be `$select`ed or entity-cast on the messages
+  endpoint (both 400) — the "X accepted" card was dropped; empty meeting-response
+  emails fall back to the "No message content" placeholder.
+- **`make release` installs the bundle**; other flatpak builds need
+  `make flatpak-test` to update the *running* app (stale-build confusion bit us
+  repeatedly — symptoms looked like the fix didn't work).
+- **Windows must be non-transient** (no `transient_for`) for GNOME to show
+  minimize/maximize.
+
 ## Build / run / test
 ```bash
 cd <repo>

@@ -40,8 +40,12 @@ SCOPES_MAIL = [
 # calendar.events grants read + create/delete of events (supersedes the old
 # read-only scope so the New event / Delete actions work).
 SCOPES_CALENDAR = ["https://www.googleapis.com/auth/calendar.events"]
-# Read-only access to the user's Google Contacts (for To: autocomplete).
-SCOPES_CONTACTS = ["https://www.googleapis.com/auth/contacts.readonly"]
+# Read-only access to Google Contacts + auto-saved "other contacts" (people you
+# email but haven't saved) — for To: autocomplete.
+SCOPES_CONTACTS = [
+    "https://www.googleapis.com/auth/contacts.readonly",
+    "https://www.googleapis.com/auth/contacts.other.readonly",
+]
 
 _TOKEN_KIND = "google-token"
 

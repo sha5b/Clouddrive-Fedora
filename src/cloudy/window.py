@@ -114,12 +114,20 @@ class CloudyWindow(Adw.ApplicationWindow):
         from .widgets.dashboard_view import DashboardView
 
         header = Adw.HeaderBar()
+        refresh = Gtk.Button(icon_name="view-refresh-symbolic", tooltip_text=_("Refresh"))
+        refresh.connect("clicked", lambda *_: self._refresh_overview())
+        header.pack_end(refresh)
         toolbar = Adw.ToolbarView()
         toolbar.add_top_bar(header)
         toolbar.set_content(DashboardView(self))
         page = Adw.NavigationPage(title=_("Overview"), tag="overview")
         page.set_child(toolbar)
         self.content_nav.replace([page])
+
+    def _refresh_overview(self) -> None:
+        # Drop the cached aggregate so the rebuilt dashboard fetches fresh.
+        self.get_application().cache.invalidate(prefix="dashboard:")
+        self._show_dashboard()
 
     # -- per-account content ---------------------------------------------
     def _show_account(self, account) -> None:
@@ -355,16 +363,18 @@ class CloudyWindow(Adw.ApplicationWindow):
             SCOPES_GROUPS,
             SCOPES_MAIL,
             SCOPES_MAIL_SHARED,
+            SCOPES_PEOPLE,
             SCOPES_TEAMS,
         )
 
         try:
             auth = GraphAuth(client_id, secrets, account.id)
             # Request all capability scopes up front so a single consent covers
-            # Files, Teams, Mail, Calendar, group + shared mailboxes/calendars.
+            # Files, Teams, Mail, Calendar, group + shared mailboxes/calendars,
+            # and People (To-field autocomplete).
             result = auth.sign_in_interactive(
                 SCOPES_BASE + SCOPES_FILES + SCOPES_TEAMS + SCOPES_GROUPS
-                + SCOPES_MAIL + SCOPES_MAIL_SHARED
+                + SCOPES_MAIL + SCOPES_MAIL_SHARED + SCOPES_PEOPLE
             )
             try:
                 ident = GraphAuth.fetch_userprincipalname(result["access_token"])

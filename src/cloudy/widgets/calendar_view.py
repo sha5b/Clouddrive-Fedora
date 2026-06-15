@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # SPDX-FileCopyrightText: 2026 Shahab Nedaei
-"""Calendar surface: a two-pane week agenda (Outlook-style).
+"""Calendar surface: a month grid with an agenda list alongside.
 
-Left pane = events for the next 7 days, grouped by day. For Microsoft accounts a
-Me / Teams / Shared switcher mirrors the Mail view: **Me** is your own calendar,
-**Teams** picks a M365 group/team calendar, **Shared** picks another mailbox's
-calendar you have delegated access to. Right pane = the selected event's detail,
-with Join/Open and RSVP actions.
+Left pane = the source switcher (Microsoft: Me / Teams / Shared) and an agenda
+list of the displayed month's events (past and future). Right pane = a month
+**grid** (``widgets/month_grid.MonthGrid``). Clicking an event — in the agenda
+or a grid chip — opens it in a standalone, non-modal **event window**
+(``widgets/event_window.EventDetailWindow``) rather than an inline pane.
 """
 
 from __future__ import annotations
@@ -16,6 +16,8 @@ from gettext import gettext as _
 
 from gi.repository import Adw, GLib, Gtk, Pango
 
+from .event_window import EventDetailWindow
+from .month_grid import MonthGrid
 from .source_nav import (
     SCOPE_HINT,
     SourceTabs,
@@ -43,9 +45,11 @@ class CalendarView(Adw.Bin):
         self._groups = None         # lazily loaded list[{id, name}]
         self._ctx_items: list = []
         self._suppress = False
-        self._open_eid = None
         self._events: list = []
         self._has_data = False
+
+        # -- right pane: month grid (built first; the loader feeds it) ----
+        self._grid = MonthGrid(on_event=self._open_event, on_range=self._on_grid_range)
 
         # -- left pane: source switcher + agenda list --------------------
         self._ctx_dd = Gtk.DropDown(model=Gtk.StringList.new([]), tooltip_text=_("Choose"))
@@ -84,7 +88,7 @@ class CalendarView(Adw.Bin):
             sidebar_tb.add_top_bar(header)
             bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6,
                           margin_top=6, margin_bottom=6, margin_start=10, margin_end=10)
-            range_lbl = Gtk.Label(label=_("Next 7 days"), xalign=0, hexpand=True)
+            range_lbl = Gtk.Label(label=_("Agenda"), xalign=0, hexpand=True)
             range_lbl.add_css_class("dim-label")
             bar.append(range_lbl)
             bar.append(self._ctx_dd)
@@ -94,34 +98,24 @@ class CalendarView(Adw.Bin):
         else:
             header = Adw.HeaderBar(
                 show_start_title_buttons=False, show_end_title_buttons=False,
-                title_widget=Gtk.Label(label=_("Next 7 days")))
+                title_widget=Gtk.Label(label=_("Agenda")))
             header.pack_start(new_btn)
             sidebar_tb.add_top_bar(header)
         sidebar_tb.set_content(list_scroll)
         sidebar_page = Adw.NavigationPage(title=_("Calendar"), tag="agenda")
         sidebar_page.set_child(sidebar_tb)
 
-        # -- right pane: event detail ------------------------------------
-        self._reader = Adw.Bin()
-        self._reader.set_child(Adw.StatusPage(
-            icon_name="x-office-calendar-symbolic", title=_("No event selected"),
-            description=_("Pick an event to see its details here."),
-        ))
         content_header = Adw.HeaderBar(show_start_title_buttons=False,
-                                       show_end_title_buttons=False)
-        self._delete_btn = Gtk.Button(
-            icon_name="user-trash-symbolic", tooltip_text=_("Delete event"),
-            sensitive=False)
-        self._delete_btn.connect("clicked", self._on_delete_event_clicked)
-        content_header.pack_end(self._delete_btn)
+                                       show_end_title_buttons=False,
+                                       title_widget=Gtk.Label(label=_("Calendar")))
         content_tb = Adw.ToolbarView()
         content_tb.add_top_bar(content_header)
-        content_tb.set_content(self._reader)
-        content_page = Adw.NavigationPage(title=_("Event"), tag="event")
+        content_tb.set_content(self._grid)
+        content_page = Adw.NavigationPage(title=_("Calendar"), tag="month")
         content_page.set_child(content_tb)
 
         self._split = Adw.NavigationSplitView(
-            min_sidebar_width=320, max_sidebar_width=480, sidebar_width_fraction=0.4,
+            min_sidebar_width=300, max_sidebar_width=420, sidebar_width_fraction=0.32,
         )
         self._split.set_sidebar(sidebar_page)
         self._split.set_content(content_page)
@@ -130,13 +124,25 @@ class CalendarView(Adw.Bin):
         self._update_source_ui()
         self._select_context(None)  # load "Me" from cache or the server
 
+    # -- range (the grid's visible month drives what we fetch) -----------
+    def _range_iso(self) -> tuple[str, str]:
+        first, last = self._grid.visible_range()
+        return f"{first}T00:00:00Z", f"{last}T23:59:59Z"
+
+    def _on_grid_range(self, _first: str, _last: str) -> None:
+        # The grid moved to another month — refetch that span.
+        self._has_data = False
+        self._load_async()
+
     # -- cache + agenda list ---------------------------------------------
     def _cache_key(self) -> str:
+        first, _last = self._grid.visible_range()
+        month = first[:7]  # YYYY-MM of the visible grid
         if self._source == "teams" and self._context:
-            return f"{self._account.id}:events:group:{self._context}:7d"
+            return f"{self._account.id}:events:group:{self._context}:{month}"
         if self._source == "shared" and self._context:
-            return f"{self._account.id}:events:shared:{self._context}:7d"
-        return f"{self._account.id}:events:me:7d"
+            return f"{self._account.id}:events:shared:{self._context}:{month}"
+        return f"{self._account.id}:events:me:{month}"
 
     def _clear(self) -> None:
         clear_listbox(self._list)
@@ -147,9 +153,10 @@ class CalendarView(Adw.Bin):
 
     def _render(self, events) -> None:
         self._events = events
+        self._grid.set_events(events)
         self._clear()
         if not events:
-            self._set_message(_("No events in the next 7 days."))
+            self._set_message(_("No events this month."))
             self._has_data = False
             return
         last_day = None
@@ -172,7 +179,7 @@ class CalendarView(Adw.Bin):
 
     def _event_row(self, ev) -> Gtk.ListBoxRow:
         row = Gtk.ListBoxRow(activatable=True)
-        row._eid = ev.get("id")
+        row._ev = ev  # type: ignore[attr-defined]
         box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12,
                       margin_top=8, margin_bottom=8, margin_start=12, margin_end=12)
         row.set_child(box)
@@ -257,6 +264,7 @@ class CalendarView(Adw.Bin):
             self._ctx_current = None
             self._update_star()
             self._set_message(empty)
+            self._grid.set_events([])
             return
         self._ctx_current = items[0]
         self._update_star()
@@ -318,9 +326,7 @@ class CalendarView(Adw.Bin):
         self._load_async()
 
     def _load_async(self) -> None:
-        now = datetime.now(timezone.utc)
-        start_iso = now.strftime("%Y-%m-%dT%H:%M:%SZ")
-        end_iso = (now + timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        start_iso, end_iso = self._range_iso()
         source, context, key = self._source, self._context, self._cache_key()
 
         def work():
@@ -341,10 +347,10 @@ class CalendarView(Adw.Bin):
             self._window.get_application().cache.set(key, events)
             # Mirror your own calendar into the GNOME Shell calendar (EDS),
             # best-effort and off-thread (no-op unless the setting is on).
-            if key == f"{self._account.id}:events:me:7d" and events:
+            if key.startswith(f"{self._account.id}:events:me:") and events:
                 self._publish_to_eds(events)
         if key != self._cache_key():
-            return False  # a stale response for a source we left
+            return False  # a stale response for a source/month we left
         if error:
             if not self._has_data:
                 if is_scope_error(error):
@@ -355,48 +361,21 @@ class CalendarView(Adw.Bin):
         self._render(events)
         return False
 
-    # -- event detail -----------------------------------------------------
+    # -- open / create ----------------------------------------------------
     def _on_row_activated(self, _list, row) -> None:
-        eid = getattr(row, "_eid", None)
-        if eid is None:
-            return
-        self._open_eid = eid
-        self._delete_btn.set_sensitive(False)  # enabled once detail loads
-        self._reader.set_child(self._spinner())
-        self._split.set_show_content(True)
+        ev = getattr(row, "_ev", None)
+        if ev is not None and ev.get("id"):
+            self._open_event(ev)
 
-        def work():
-            from .clients import build_account_client
+    def _open_event(self, ev) -> None:
+        EventDetailWindow(self._window, self._account, ev["id"],
+                          on_changed=self._reload_current).present()
 
-            client = build_account_client(self._window.get_application(), self._account)
-            return client.get_event(eid)
-
-        run_async(work, lambda event, error: self._show_event(eid, event, error))
-
-    def _show_event(self, eid, event, error) -> bool:
-        if eid != self._open_eid:
-            return False
-        if error:
-            self._reader.set_child(Adw.StatusPage(
-                icon_name="dialog-error-symbolic",
-                title=_("Couldn't open event"), description=error))
-            return False
-        from .event_view import build_event_content
-
-        self._reader.set_child(build_event_content(event, on_rsvp=self._make_rsvp(eid)))
-        self._delete_btn.set_sensitive(self._event_deletable(eid))
-        return False
-
-    # -- create / delete --------------------------------------------------
     def _create_context(self):
         """Return ``(source, address)`` for the calendar to write to."""
         if self._is_ms and self._source == "shared" and self._ctx_current is not None:
             return "shared", self._ctx_current["id"]
         return "me", None
-
-    def _event_deletable(self, eid) -> bool:
-        """Group/team events are read-only; everything else can be deleted."""
-        return not str(eid).startswith("group:")
 
     def _on_new_event_clicked(self, _btn) -> None:
         if self._is_ms and self._source == "teams":
@@ -421,83 +400,10 @@ class CalendarView(Adw.Bin):
                     create_fn=create).present()
 
     def _reload_current(self) -> bool:
-        """Force a re-fetch of the active source after a write."""
+        """Force a re-fetch of the active source/month after a write."""
         self._has_data = False
         self._load_async()
         return False
-
-    def _on_delete_event_clicked(self, _btn) -> None:
-        eid = self._open_eid
-        if not eid:
-            return
-        dialog = Adw.AlertDialog(
-            heading=_("Delete event?"),
-            body=_("This removes the event from the calendar."))
-        dialog.add_response("cancel", _("Cancel"))
-        dialog.add_response("delete", _("Delete"))
-        dialog.set_response_appearance("delete", Adw.ResponseAppearance.DESTRUCTIVE)
-        dialog.connect(
-            "response",
-            lambda _d, r: self._do_delete_event(eid) if r == "delete" else None)
-        dialog.present(self._window)
-
-    def _do_delete_event(self, eid) -> None:
-        self._window.add_toast(_("Deleting…"))
-
-        def work():
-            from .clients import build_account_client
-
-            client = build_account_client(self._window.get_application(), self._account)
-            client.delete_event(eid)
-
-        run_async(work, lambda _r, error: self._event_deleted(eid, error))
-
-    def _event_deleted(self, eid, error) -> bool:
-        if error:
-            self._window.add_toast(_("Couldn't delete event: %s") % error)
-            return False
-        self._window.add_toast(_("Event deleted."))
-        row = self._row_for(eid)
-        if row is not None:
-            self._list.remove(row)
-        self._events = [e for e in self._events if e.get("id") != eid]
-        if eid == self._open_eid:
-            self._open_eid = None
-            self._delete_btn.set_sensitive(False)
-            self._reader.set_child(Adw.StatusPage(
-                icon_name="x-office-calendar-symbolic", title=_("Event deleted")))
-        self._reload_current()  # refresh counts/cache from the server
-        return False
-
-    def _make_rsvp(self, eid):
-        def on_rsvp(action):
-            self._window.add_toast(_("Sending response…"))
-
-            def work():
-                from .clients import build_account_client
-
-                client = build_account_client(self._window.get_application(), self._account)
-                client.respond_event(eid, action)
-
-            run_async(work, lambda _r, error: self._rsvp_done(eid, error))
-        return on_rsvp
-
-    def _rsvp_done(self, eid, error) -> bool:
-        if error:
-            self._window.add_toast(_("Couldn't send response: %s") % error)
-        else:
-            self._window.add_toast(_("Response sent."))
-            if eid == self._open_eid:
-                self._on_row_activated(self._list, self._row_for(eid) or self._list)
-        return False
-
-    def _row_for(self, eid):
-        row = self._list.get_first_child()
-        while row is not None:
-            if getattr(row, "_eid", None) == eid:
-                return row
-            row = row.get_next_sibling()
-        return None
 
     def _publish_to_eds(self, events) -> None:
         import threading
@@ -514,14 +420,6 @@ class CalendarView(Adw.Bin):
                 pass
 
         threading.Thread(target=work, daemon=True).start()
-
-    def _spinner(self) -> Gtk.Widget:
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, halign=Gtk.Align.CENTER,
-                      valign=Gtk.Align.CENTER, hexpand=True, vexpand=True)
-        spinner = Gtk.Spinner(width_request=32, height_request=32)
-        spinner.start()
-        box.append(spinner)
-        return box
 
 
 def _time_label(ev) -> str:

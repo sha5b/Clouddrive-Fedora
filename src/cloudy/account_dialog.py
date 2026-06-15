@@ -58,6 +58,10 @@ class AddAccountDialog(Adw.Dialog):
             module_id=module.id,
             signed_in=False,
         )
+        # Activate the provider's services on add — otherwise only modules in the
+        # 'enabled-modules' default (Microsoft 365) light up, and a freshly added
+        # Google account would show as "off" in Settings.
+        self._engine.set_enabled(module.id, True)
         self._registry.add(account)
         if self._on_added is not None:
             self._on_added(account)

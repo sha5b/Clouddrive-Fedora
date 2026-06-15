@@ -68,10 +68,11 @@ def _parse_hhmm(text: str, fallback: tuple[int, int]) -> tuple[int, int]:
 
 class EventWindow(EditorWindow):
     def __init__(self, window, *, on_calendar: str, create_fn,
-                 title: str | None = None, initial: dict | None = None):
+                 title: str | None = None, initial: dict | None = None,
+                 primary_label: str | None = None):
         super().__init__(window, title=title or _("New event"),
-                         primary_label=_("Create"), default_width=560,
-                         default_height=640)
+                         primary_label=primary_label or _("Create"),
+                         default_width=560, default_height=640)
         self._window = window
         self._create_fn = create_fn
 

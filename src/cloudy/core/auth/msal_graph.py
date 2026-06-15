@@ -51,6 +51,9 @@ SCOPES_MAIL = [
 SCOPES_MAIL_SHARED = [
     "Mail.ReadWrite.Shared", "Mail.Send.Shared", "Calendars.ReadWrite.Shared",
 ]
+# Relevance-ranked people (org colleagues + frequent contacts) for the To-field
+# autocomplete — the personal /me/contacts folder is empty for most org users.
+SCOPES_PEOPLE = ["People.Read"]
 # Enumerate the Teams the user belongs to (each Team's files = a doc library).
 SCOPES_TEAMS = ["Team.ReadBasic.All"]
 # Read M365 group mailboxes (conversations) and group/team calendars. Usually

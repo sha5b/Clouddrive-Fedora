@@ -2,7 +2,16 @@
 # SPDX-FileCopyrightText: 2026 Shahab Nedaei
 """Entry point: create and run the Adwaita application."""
 
+import os
 import sys
+
+# WebKitGTK's DMA-BUF renderer paints blank pages intermittently on many
+# GPU/driver/compositor combos (mail bodies render as a white void, "sometimes"
+# working). Disabling it is the documented, reliable workaround — negligible
+# cost for our small mail/event WebViews. Must be set before WebKit's web
+# process spawns; here at import time is well before the first WebView.
+# `setdefault` so a user/env can still override.
+os.environ.setdefault("WEBKIT_DISABLE_DMABUF_RENDERER", "1")
 
 import gi
 

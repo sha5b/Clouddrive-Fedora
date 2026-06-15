@@ -46,12 +46,18 @@ def _to_text(body: str) -> str:
 _PAGE_BG = "#ffffff"
 
 
+_CID_IMG_RE = re.compile(r"<img\b[^>]*\bsrc\s*=\s*[\"']cid:[^>]*>", re.IGNORECASE)
+
+
 def _wrap_html(content: str, is_html: bool) -> str:
     """Wrap a message body in a minimal HTML document on a light page."""
     fg, bg, link, quote = "#1a1a1a", _PAGE_BG, "#1a73e8", "#5e5c64"
 
     if is_html:
-        body = content
+        # Drop inline (cid:) images — they reference mail attachments we don't
+        # fetch, so they'd render as broken-image "?" placeholders (common in
+        # Outlook/Teams meeting invites). http(s) images still load normally.
+        body = _CID_IMG_RE.sub("", content)
     else:
         body = "<pre>%s</pre>" % html.escape(content)
 
@@ -74,7 +80,48 @@ def _wrap_html(content: str, is_html: bool) -> str:
 
 
 def _body_widget(msg: dict) -> Gtk.Widget:
-    return html_body_widget(msg.get("body", "") or "", msg.get("body_html", False))
+    body = msg.get("body", "") or ""
+    # Some messages (notably Microsoft meeting accept/decline notifications)
+    # carry no body at all — fall back to the server preview, then to a clear
+    # placeholder, rather than rendering a blank white page.
+    if not _to_text(body).strip():
+        if msg.get("meeting_response"):
+            return _meeting_response_card(msg)
+        preview = (msg.get("preview") or "").strip()
+        if preview:
+            return html_body_widget(preview, False)
+    return html_body_widget(body, msg.get("body_html", False))
+
+
+def _meeting_response_card(msg: dict) -> Gtk.Widget:
+    """For an empty-bodied meeting accept/decline notification, show who
+    responded and how, instead of a blank page."""
+    meta = {
+        "accepted": ("emblem-ok-symbolic", _("accepted"), "success"),
+        "tentative": ("dialog-question-symbolic", _("tentatively accepted"), "warning"),
+        "declined": ("window-close-symbolic", _("declined"), "error"),
+    }
+    icon_name, verb, accent = meta.get(
+        msg.get("meeting_response"), ("mail-read-symbolic", _("responded"), "dim-label"))
+    who = sender_name(msg.get("from", "")) or _("Someone")
+
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, vexpand=True,
+                  hexpand=True, valign=Gtk.Align.CENTER, halign=Gtk.Align.CENTER,
+                  margin_start=24, margin_end=24)
+    icon = Gtk.Image.new_from_icon_name(icon_name)
+    icon.set_pixel_size(48)
+    icon.add_css_class(accent)
+    box.append(icon)
+    line = Gtk.Label(label=_("%(who)s %(verb)s the meeting") % {"who": who, "verb": verb},
+                     wrap=True, justify=Gtk.Justification.CENTER)
+    line.add_css_class("title-3")
+    box.append(line)
+    subject = (msg.get("subject") or "").strip()
+    if subject:
+        sub = Gtk.Label(label=subject, wrap=True, justify=Gtk.Justification.CENTER)
+        sub.add_css_class("dim-label")
+        box.append(sub)
+    return box
 
 
 def html_body_widget(content: str, is_html: bool) -> Gtk.Widget:
@@ -82,6 +129,10 @@ def html_body_widget(content: str, is_html: bool) -> Gtk.Widget:
     plain-text label fallback if WebKitGTK isn't available. Reused by the mail
     reader and the calendar event detail."""
     content = content or ""
+    # Empty body → a clear placeholder instead of a blank white page (covers
+    # meeting notifications and any content-less message/event).
+    if not _to_text(content).strip():
+        return _empty_placeholder()
     from ..core.gi_compat import require
 
     if require("WebKit", ("6.0", "6.1")) is None:
@@ -123,6 +174,20 @@ def html_body_widget(content: str, is_html: bool) -> Gtk.Widget:
     view.connect("decide-policy", _on_decide)
     view.load_html(_wrap_html(content, is_html), None)
     return view
+
+
+def _empty_placeholder() -> Gtk.Widget:
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, vexpand=True,
+                  hexpand=True, valign=Gtk.Align.CENTER, halign=Gtk.Align.CENTER)
+    icon = Gtk.Image.new_from_icon_name("mail-read-symbolic")
+    icon.set_pixel_size(40)
+    icon.add_css_class("dim-label")
+    box.append(icon)
+    label = Gtk.Label(label=_("No message content"))
+    label.add_css_class("dim-label")
+    label.add_css_class("title-4")
+    box.append(label)
+    return box
 
 
 def _text_fallback(content: str) -> Gtk.Widget:

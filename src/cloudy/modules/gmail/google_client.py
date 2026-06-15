@@ -102,6 +102,22 @@ class GoogleClient:
         except urllib.error.HTTPError as exc:
             raise GoogleError(f"Google {exc.code}: {exc.read().decode(errors='replace')}") from exc
 
+    def _patch(self, url: str, body: dict, scopes: Sequence[str]) -> dict:
+        token = self._token_provider(scopes)
+        if not token:
+            raise GoogleError("not signed in (no token for the requested scopes)")
+        req = urllib.request.Request(
+            url, data=json.dumps(body).encode(), method="PATCH",
+            headers={"Authorization": f"Bearer {token}",
+                     "Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                raw = resp.read().decode()
+                return json.loads(raw) if raw else {}
+        except urllib.error.HTTPError as exc:
+            raise GoogleError(f"Google {exc.code}: {exc.read().decode(errors='replace')}") from exc
+
     def _delete(self, url: str, scopes: Sequence[str]) -> None:
         token = self._token_provider(scopes)
         if not token:
@@ -268,18 +284,41 @@ class GoogleClient:
 
     # -- Contacts ---------------------------------------------------------
     def list_contacts(self, *, limit: int = 1000) -> list[dict]:
-        """Google Contacts as ``[{name, email}]`` (needs contacts.readonly)."""
-        url = (f"{PEOPLE}/people/me/connections"
-               f"?personFields=names,emailAddresses&pageSize={limit}")
-        data = self._get(url, SCOPES_CONTACTS)
-        out = []
-        for p in data.get("connections", []):
-            names = p.get("names") or []
-            name = names[0].get("displayName", "") if names else ""
-            for ea in p.get("emailAddresses", []) or []:
-                addr = ea.get("value")
-                if addr:
-                    out.append({"name": name, "email": addr})
+        """People for To-field autocomplete as ``[{name, email}]``: saved
+        contacts (connections) plus auto-saved "other contacts" (people you've
+        emailed). Each source is best-effort so one missing scope doesn't wipe
+        out the other."""
+        out: list[dict] = []
+        seen: set[str] = set()
+
+        def add(name: str, addr: str) -> None:
+            key = (addr or "").lower()
+            if addr and key not in seen:
+                seen.add(key)
+                out.append({"name": name or addr, "email": addr})
+
+        def harvest(people: list) -> None:
+            for p in people or []:
+                names = p.get("names") or []
+                name = names[0].get("displayName", "") if names else ""
+                for ea in p.get("emailAddresses", []) or []:
+                    add(name, ea.get("value"))
+
+        try:
+            data = self._get(
+                f"{PEOPLE}/people/me/connections"
+                f"?personFields=names,emailAddresses&pageSize={limit}", SCOPES_CONTACTS)
+            harvest(data.get("connections", []))
+        except GoogleError:
+            pass
+        try:
+            data = self._get(
+                f"{PEOPLE}/otherContacts"
+                f"?readMask=names,emailAddresses&pageSize={min(limit, 1000)}",
+                SCOPES_CONTACTS)
+            harvest(data.get("otherContacts", []))
+        except GoogleError:
+            pass
         return out
 
     # -- Calendar ---------------------------------------------------------
@@ -328,6 +367,26 @@ class GoogleClient:
         return self._post(
             f"{CALENDAR}/calendars/primary/events", event, SCOPES_CALENDAR)
 
+    def update_event(self, event_id: str, *, subject: str, start_iso: str,
+                     end_iso: str, location: str = "", body: str = "",
+                     attendees=None, all_day: bool = False, source: str = "me",
+                     address: str | None = None, html: bool = False) -> dict:
+        """Edit an existing event on the primary calendar (PATCH)."""
+        def slot(iso: str) -> dict:
+            return {"date": iso[:10]} if all_day else {"dateTime": iso}
+
+        event: dict = {"summary": subject, "start": slot(start_iso),
+                       "end": slot(end_iso)}
+        # PATCH: omit empty body/location so they're left unchanged on the server.
+        if location:
+            event["location"] = location
+        if body:
+            event["description"] = body
+        if attendees:
+            event["attendees"] = [{"email": a} for a in attendees if a]
+        return self._patch(
+            f"{CALENDAR}/calendars/primary/events/{event_id}", event, SCOPES_CALENDAR)
+
     def delete_event(self, event_id: str) -> None:
         """Delete an event from the primary calendar (needs calendar.events)."""
         self._delete(
@@ -338,7 +397,9 @@ class GoogleClient:
         data = self._get(f"{CALENDAR}/calendars/primary/events/{event_id}", SCOPES_CALENDAR)
         base = self._event_from_json(data)
         organizer = data.get("organizer") or {}
-        attendees = [a.get("displayName") or a.get("email", "")
+        # {name, response}; Google response: needsAction|declined|tentative|accepted.
+        attendees = [{"name": a.get("displayName") or a.get("email", ""),
+                      "response": a.get("responseStatus", "needsAction")}
                      for a in data.get("attendees", []) or []]
         description = data.get("description", "") or ""
         base.update({

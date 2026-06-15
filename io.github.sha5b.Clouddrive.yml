@@ -13,6 +13,8 @@ command: cloudy
 
 finish-args:
   - --share=network
+  # Work around WebKitGTK's DMA-BUF renderer painting blank mail bodies.
+  - --env=WEBKIT_DISABLE_DMABUF_RENDERER=1
   - --socket=wayland
   - --socket=fallback-x11
   - --device=dri
