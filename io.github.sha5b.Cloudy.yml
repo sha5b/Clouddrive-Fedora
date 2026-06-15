@@ -42,15 +42,10 @@ cleanup:
   - /share/doc
 
 modules:
-  # Blueprint compiler is a build-time dependency (UI compilation).
-  - name: blueprint-compiler
-    buildsystem: meson
-    cleanup:
-      - '*'
-    sources:
-      - type: git
-        url: https://gitlab.gnome.org/GNOME/blueprint-compiler.git
-        tag: v0.16.0
+  # NOTE: blueprint-compiler is NOT built here — the GNOME 48+ SDK already
+  # bundles it. Building it from gitlab.gnome.org made every release depend on
+  # that host being up (a 503 there once broke the whole Flatpak build), so we
+  # rely on the SDK-provided compiler instead.
 
   # Bundle the rclone static binary so files work with zero host install.
   # (The app also self-provisions rclone rootlessly when not bundled.)
