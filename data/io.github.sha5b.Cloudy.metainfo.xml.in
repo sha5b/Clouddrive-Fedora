@@ -4,7 +4,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 SPDX-FileCopyrightText: 2026 Shahab Nedaei
 -->
 <component type="desktop-application">
-  <id>io.github.sha5b.Clouddrive</id>
+  <id>io.github.sha5b.Cloudy</id>
 
   <name>Cloudy</name>
   <summary>Use OneDrive, SharePoint and unified mail on your desktop</summary>
@@ -29,7 +29,7 @@ SPDX-FileCopyrightText: 2026 Shahab Nedaei
     </p>
   </description>
 
-  <launchable type="desktop-id">io.github.sha5b.Clouddrive.desktop</launchable>
+  <launchable type="desktop-id">io.github.sha5b.Cloudy.desktop</launchable>
 
   <content_rating type="oars-1.1" />
 
