@@ -91,6 +91,18 @@ SPDX-FileCopyrightText: 2026 Shahab Nedaei
   </screenshots>
 
   <releases>
+    <release version="0.2.0" date="2026-06-15">
+      <description>
+        <p>Chat, packaging and shared-source release.</p>
+        <ul>
+          <li>Teams-style messenger (Teams chats and Google Chat): 1:1, group and meeting threads with inline images, reactions, @mentions, edit/delete, presence and live updates</li>
+          <li>Fedora RPM and single-file Flatpak bundle, with OAuth client IDs baked in at build time</li>
+          <li>Shared / group Mail and Calendar sources (Me / Teams / Shared) with pinnable sources on the Dashboard</li>
+          <li>Calendar month grid, non-modal event window with RSVP tracker and inline edit</li>
+          <li>Standalone image viewer and rich-text editor widgets</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-06-15">
       <description>
         <p>First preview release.</p>

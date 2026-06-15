@@ -13,7 +13,7 @@
 %global appid io.github.sha5b.Cloudy
 
 Name:           cloudy
-Version:        0.1.0
+Version:        0.2.0
 Release:        1%{?dist}
 Summary:        Use OneDrive, SharePoint and unified mail on your desktop
 
@@ -115,5 +115,9 @@ meson test -C %{_vpath_builddir} --print-errorlogs
 %{_datadir}/%{name}/
 
 %changelog
+* Sun Jun 15 2026 Shahab Nedaei <ned.tabulov@gmail.com> - 0.2.0-1
+- Chat (Teams chats + Google Chat), RPM/Flatpak packaging, shared/group
+  Mail & Calendar sources, calendar redesign, image viewer + rich-text editor.
+
 * Sun Jun 14 2026 Shahab Nedaei <ned.tabulov@gmail.com> - 0.1.0-1
 - Initial RPM packaging.
