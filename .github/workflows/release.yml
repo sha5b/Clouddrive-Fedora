@@ -1,0 +1,79 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Shahab Nedaei
+#
+# Build the RPM + Flatpak with OAuth credentials baked in from GitHub Secrets,
+# and attach them to the release. The secrets live ONLY in the repo's Actions
+# secret store (Settings -> Secrets and variables -> Actions) — never in git and
+# never in the workflow file. See README / docs for the required secret names.
+#
+# Triggers:
+#   * pushing a tag  v*           -> builds + attaches to that tag's release
+#   * manual dispatch (with a tag) -> builds + attaches to an existing release
+name: Release artifacts
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag to attach artifacts to (e.g. v0.1.0)'
+        required: true
+        default: 'v0.1.0'
+
+permissions:
+  contents: write          # needed to upload assets to the release
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: fedora:41
+      options: --privileged   # flatpak-builder needs bubblewrap/user namespaces
+    steps:
+      - name: Install build dependencies
+        run: |
+          dnf -y install \
+            make meson ninja-build gcc pkgconf-pkg-config \
+            gtk4-devel libadwaita-devel glib2-devel \
+            python3 python3-gobject python3-devel \
+            desktop-file-utils libappstream-glib appstream \
+            rpm-build git rsync gettext findutils which blueprint-compiler \
+            flatpak flatpak-builder
+
+      - uses: actions/checkout@v4
+
+      - name: Set up Flathub + Flatpak Builder
+        run: |
+          flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+          flatpak install -y --noninteractive flathub org.flatpak.Builder
+
+      # Write the credentials the Makefile reads from .env. Sourced from repo
+      # Secrets; this file is created on the runner only and never committed.
+      - name: Inject credentials
+        env:
+          MS_CLIENT_ID: ${{ secrets.CLOUDY_MS_CLIENT_ID }}
+          GOOGLE_CLIENT_ID: ${{ secrets.CLOUDY_GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.CLOUDY_GOOGLE_CLIENT_SECRET }}
+        run: |
+          {
+            echo "CLOUDY_MS_CLIENT_ID=${MS_CLIENT_ID}"
+            echo "CLOUDY_GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}"
+            echo "CLOUDY_GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}"
+          } > .env
+
+      - name: Build RPM + Flatpak bundle
+        run: |
+          git config --global --add safe.directory "$PWD"
+          make rpm flatpak-bundle
+          cp -f _build/rpm/RPMS/noarch/cloudy-*.rpm release/ || true
+          ls -lh release/
+
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: |
+            release/io.github.sha5b.Cloudy.flatpak
+            release/cloudy-*.noarch.rpm
+          fail_on_unmatched_files: true
