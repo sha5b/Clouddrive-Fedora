@@ -42,6 +42,11 @@ Capability mix-ins declare *what* a module can surface in the UI:
 - `ChatCapability` — chat list (1:1 / group / meeting), message threads,
   send/edit/delete, inline images, reactions, presence, members/@mentions, group
   create + member management, and message search.
+- `TeamsCapability` — the hierarchical Teams surface: list joined teams, their
+  channels, and a channel's posts (with threaded replies). The Teams view also
+  reaches the team's OneNote notebook for the channel **Notes** tab. Microsoft
+  only — Google Chat spaces have no channel/notes hierarchy, so the `gmail`
+  module does not declare it and Google accounts get no Teams tab.
 
 A module implements `ServiceModule` plus any capabilities it supports. The shell
 queries capabilities to decide which sidebar surfaces and content panes to show.

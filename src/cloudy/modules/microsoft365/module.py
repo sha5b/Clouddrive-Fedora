@@ -31,13 +31,15 @@ from ...core.interfaces import (
     ModuleStatus,
     ServiceModule,
     StatusKind,
+    TeamsCapability,
 )
 from .files import OneDriveFiles
 from .graph import GraphClient
 
 
 class Microsoft365Module(
-    ServiceModule, FilesCapability, MailCapability, CalendarCapability, ChatCapability
+    ServiceModule, FilesCapability, MailCapability, CalendarCapability,
+    ChatCapability, TeamsCapability,
 ):
     id = "microsoft365"
     name = _("Microsoft 365")
@@ -102,3 +104,14 @@ class Microsoft365Module(
 
     def send_chat_message(self, chat_id: str, text: str):
         return self._graph.send_chat_message(chat_id, text)
+
+    # -- TeamsCapability (Teams channels + OneNote) -----------------------
+    def list_teams(self) -> list:
+        return self._graph.list_joined_teams()
+
+    def list_team_channels(self, team_id: str) -> list:
+        return self._graph.list_team_channels(team_id)
+
+    def list_channel_messages(self, team_id: str, channel_id: str, *,
+                              limit: int = 20) -> list:
+        return self._graph.list_channel_messages(team_id, channel_id, limit=limit)

@@ -11,6 +11,33 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-06-15
+
+### Added
+- **Teams**: a new top-level **Teams** tab (Microsoft work/school accounts) —
+  the hierarchical Team → channel surface, distinct from the flat **Chat** tab.
+  Pick a team to expand its channels; selecting a channel opens a
+  **Conversation / Notes** tab strip:
+  - **Conversation**: the channel's **posts** rendered like Teams (root post +
+    threaded replies), with inline image thumbnails and file chips matching the
+    Chat view, a composer to start a post, and an inline reply box per post
+    (`ChannelMessage.Read.All` / `ChannelMessage.Send`, tenant-admin consent).
+  - **Notes**: the team's **OneNote** notebook (`Notes.ReadWrite.All` /
+    `Notes.Create`) — browse sections and pages, read pages **rendered natively**
+    (text + inline images, no embedded browser), and **create / edit** pages
+    with the rich-text editor.
+  Google has no channel/notes equivalent (its Chat spaces remain under the Chat
+  tab), so the Teams tab is offered for Microsoft accounts only.
+
+### Fixed
+- **Flatpak release builds** no longer fetch `blueprint-compiler` from
+  `gitlab.gnome.org` (a 503 there broke a release); the GNOME 48+ SDK already
+  bundles it.
+- **Notes no longer crash the renderer**: OneNote pages are drawn with native
+  widgets instead of a full-page WebView, which on long pages overran the GPU
+  texture limit (`gsk_gpu_upload_cairo_op` segfault). Images are fetched with
+  the bearer token and shown as native thumbnails.
+
 ## [0.2.0] - 2026-06-15
 
 ### Added

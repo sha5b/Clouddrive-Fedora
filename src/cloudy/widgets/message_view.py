@@ -189,14 +189,21 @@ def html_body_widget(content: str, is_html: bool, inline_images=None) -> Gtk.Wid
     has_images = bool(inline_images) or "<img" in content.lower()
     if not _to_text(content).strip() and not has_images:
         return _empty_placeholder()
+    view = _build_webview(_wrap_html(content, is_html, inline_images))
+    return view if view is not None else _text_fallback(content)
+
+
+def _build_webview(html_doc: str):
+    """Build the shared sandboxed WebView for a complete HTML document, or None
+    if WebKitGTK isn't available on this runtime. Links open in the browser."""
     from ..core.gi_compat import require
 
     if require("WebKit", ("6.0", "6.1")) is None:
-        return _text_fallback(content)  # no WebKitGTK on this runtime
+        return None  # no WebKitGTK on this runtime
     try:
         from gi.repository import Gdk, Gio, WebKit
     except ImportError:
-        return _text_fallback(content)
+        return None
 
     view = WebKit.WebView(vexpand=True, hexpand=True)
 
@@ -228,7 +235,7 @@ def html_body_widget(content: str, is_html: bool, inline_images=None) -> Gtk.Wid
         return False
 
     view.connect("decide-policy", _on_decide)
-    view.load_html(_wrap_html(content, is_html, inline_images), None)
+    view.load_html(html_doc, None)
     return view
 
 

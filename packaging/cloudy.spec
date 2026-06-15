@@ -13,7 +13,7 @@
 %global appid io.github.sha5b.Cloudy
 
 Name:           cloudy
-Version:        0.2.0
+Version:        0.2.1
 Release:        1%{?dist}
 Summary:        Use OneDrive, SharePoint and unified mail on your desktop
 
@@ -115,6 +115,11 @@ meson test -C %{_vpath_builddir} --print-errorlogs
 %{_datadir}/%{name}/
 
 %changelog
+* Sun Jun 15 2026 Shahab Nedaei <ned.tabulov@gmail.com> - 0.2.1-1
+- Teams tab: Teams → channels with a channel Conversation (posts + threaded
+  replies) and a Notes tab backed by the team's OneNote notebook (read +
+  create/edit). Flatpak build no longer depends on gitlab.gnome.org.
+
 * Sun Jun 15 2026 Shahab Nedaei <ned.tabulov@gmail.com> - 0.2.0-1
 - Chat (Teams chats + Google Chat), RPM/Flatpak packaging, shared/group
   Mail & Calendar sources, calendar redesign, image viewer + rich-text editor.

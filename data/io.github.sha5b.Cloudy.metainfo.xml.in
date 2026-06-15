@@ -91,6 +91,16 @@ SPDX-FileCopyrightText: 2026 Shahab Nedaei
   </screenshots>
 
   <releases>
+    <release version="0.2.1" date="2026-06-15">
+      <description>
+        <p>Teams channels and OneNote.</p>
+        <ul>
+          <li>New Teams tab: pick a team and channel to read its posts (with threaded replies) and post or reply</li>
+          <li>Each channel has a Notes tab backed by the team's OneNote notebook — browse sections and pages, read them (with inline images), and create or edit pages</li>
+          <li>Flatpak builds no longer depend on gitlab.gnome.org being reachable</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.2.0" date="2026-06-15">
       <description>
         <p>Chat, packaging and shared-source release.</p>

@@ -19,7 +19,7 @@ class" module pattern.
                         │  Cloudy (Flatpak, sandboxed UI)    │
                         │                                        │
    Adw.NavigationSplitView ── sidebar (accounts / modules)       │
-                        │   └─ content stack (Files/Mail/Cal/Chat)│
+                        │   └─ content stack (Files/Mail/Cal/Chat/Teams)│
                         │                                        │
    core/  ── module engine · account registry · secrets · auth   │
                         │                                        │
@@ -60,7 +60,8 @@ services / host extensions) and has the sandboxed UI talk to them over **D-Bus**
 ### 2. Core (`src/core/`)
 - **`interfaces.py`** — the stable contracts. `ServiceModule` plus capability
   mix-ins `FilesCapability`, `MailCapability`, `CalendarCapability`,
-  `ChatCapability`. Modules are decoupled from the shell through these.
+  `ChatCapability`, `TeamsCapability` (Teams channels + OneNote). Modules are
+  decoupled from the shell through these.
 - **`account_registry.py`** — analogous to Alpaca's `instance_manager.py`. Holds
   configured accounts, persists non-secret state in GSettings, emits change
   signals the UI binds to.
@@ -80,12 +81,13 @@ services / host extensions) and has the sandboxed UI talk to them over **D-Bus**
 from a single authentication. The shell renders surfaces per capability, not per
 module.
 
-- **`microsoft365/`** — one Microsoft Graph login surfacing four capabilities:
-  Files (OneDrive/SharePoint/Teams), Mail, Calendar, and Chat (Teams chat, on
-  work/school accounts). **OneDrive is the Files capability, not a separate
-  account.** Files orchestrates `abraunegg/onedrive` (selective sync) +
-  `onedriver`/`rclone` (on-demand); mail/calendar/chat use the shared Graph
-  client. (`module.py` + `files.py` + `graph.py` + `abraunegg.py`.)
+- **`microsoft365/`** — one Microsoft Graph login surfacing five capabilities:
+  Files (OneDrive/SharePoint/Teams), Mail, Calendar, Chat (Teams chat), and
+  Teams (channels + the team OneNote notebook) — the last two on work/school
+  accounts. **OneDrive is the Files capability, not a separate account.** Files
+  orchestrates `abraunegg/onedrive` (selective sync) + `onedriver`/`rclone`
+  (on-demand); mail/calendar/chat/teams use the shared Graph client. (`module.py`
+  + `files.py` + `graph.py` + `abraunegg.py`.)
 - **`gmail/`** — the Google provider: Gmail + Google Calendar + Google Chat
   (Workspace accounts) from one Google login.
 - **`eds_reader/`** (optional) — read calendars/contacts the user already

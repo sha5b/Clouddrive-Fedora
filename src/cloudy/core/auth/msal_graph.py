@@ -68,6 +68,16 @@ SCOPES_CHAT = ["Chat.ReadWrite"]
 # delegated option is the read-all scope (per-user read isn't offered). Adding
 # this forces existing accounts to Sign Out → Sign In once.
 SCOPES_PRESENCE = ["Presence.Read.All"]
+# List a Team's channels and read/post their messages (the Teams tab's
+# Conversation view). Channel reads require tenant-admin consent (like
+# Group.Read.All); unmetered for delegated access. Work/school accounts only.
+SCOPES_CHANNELS = [
+    "Channel.ReadBasic.All", "ChannelMessage.Read.All", "ChannelMessage.Send",
+]
+# Read/write the Team (group) OneNote notebooks behind a channel's Notes tab.
+# Notes.ReadWrite.All (not the non-".All" form) is required to reach *group*
+# notebooks; Notes.Create allows new pages. No admin consent needed.
+SCOPES_NOTES = ["Notes.ReadWrite.All", "Notes.Create"]
 
 _CACHE_KIND = "msal-cache"
 

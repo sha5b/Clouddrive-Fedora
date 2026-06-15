@@ -17,6 +17,7 @@ CAPABILITY_UI = {
     "mail": (_("Mail"), "mail-unread-symbolic"),
     "calendar": (_("Calendar"), "x-office-calendar-symbolic"),
     "chat": (_("Chat"), "user-available-symbolic"),
+    "teams": (_("Teams"), "system-users-symbolic"),
 }
 
 
@@ -189,11 +190,12 @@ class CloudyWindow(Adw.ApplicationWindow):
             self._show_disabled_account(account)
             return
         caps = capabilities_of(module) if module else []
-        # Hide surfaces a personal (consumer) account can't use: Teams Chat has
-        # no consumer API. Mail/Calendar's own Teams/Shared sources are likewise
-        # hidden inside those views (see MailView/CalendarView).
+        # Hide surfaces a personal (consumer) account can't use: Teams Chat and
+        # the Teams (channels) tab have no consumer API. Mail/Calendar's own
+        # Teams/Shared sources are likewise hidden inside those views (see
+        # MailView/CalendarView).
         if account.is_personal:
-            caps = [c for c in caps if c != "chat"]
+            caps = [c for c in caps if c not in ("chat", "teams")]
 
         stack = Adw.ViewStack()
         self._account_stack = stack
@@ -407,6 +409,10 @@ class CloudyWindow(Adw.ApplicationWindow):
                 from .widgets.chat_view import ChatView
 
                 return ChatView(self, account)
+            if key == "teams":
+                from .widgets.teams_view import TeamsView
+
+                return TeamsView(self, account)
 
         status = Adw.StatusPage(
             icon_name=CAPABILITY_UI.get(key, (None, "application-x-addon-symbolic"))[1],
@@ -455,11 +461,13 @@ class CloudyWindow(Adw.ApplicationWindow):
         from .core.auth.msal_graph import (
             GraphAuth,
             SCOPES_BASE,
+            SCOPES_CHANNELS,
             SCOPES_CHAT,
             SCOPES_FILES,
             SCOPES_GROUPS,
             SCOPES_MAIL,
             SCOPES_MAIL_SHARED,
+            SCOPES_NOTES,
             SCOPES_PEOPLE,
             SCOPES_PRESENCE,
             SCOPES_TEAMS,
@@ -469,11 +477,12 @@ class CloudyWindow(Adw.ApplicationWindow):
             auth = GraphAuth(client_id, secrets, account.id)
             # Request all capability scopes up front so a single consent covers
             # Files, Teams, Mail, Calendar, group + shared mailboxes/calendars,
-            # Chat (Teams messages), and People (To-field autocomplete).
+            # Chat (Teams messages), Teams channels + OneNote (the Teams tab),
+            # and People (To-field autocomplete).
             result = auth.sign_in_interactive(
                 SCOPES_BASE + SCOPES_FILES + SCOPES_TEAMS + SCOPES_GROUPS
                 + SCOPES_MAIL + SCOPES_MAIL_SHARED + SCOPES_PEOPLE + SCOPES_CHAT
-                + SCOPES_PRESENCE
+                + SCOPES_PRESENCE + SCOPES_CHANNELS + SCOPES_NOTES
             )
             try:
                 ident = GraphAuth.fetch_userprincipalname(result["access_token"])

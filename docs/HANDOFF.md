@@ -12,7 +12,60 @@ Calendar)** and **Google (Gmail, Calendar, Drive)** on Fedora 44 (GNOME 50). It
 for mail/calendar) rather than reimplementing them. Read `docs/ARCHITECTURE.md`,
 `docs/AUTH.md`, `docs/SECRETS.md`, `docs/ROADMAP.md` for depth.
 
-## ⏭ Continue here — Chat scroll smoothness + animations (2026-06-15, latest)
+## ⏭ Continue here — Teams tab: channels + OneNote (2026-06-15, latest, v0.2.1)
+
+A new top-level **Teams** capability/tab, distinct from the flat **Chat** tab.
+Microsoft work/school only (`gmail` does **not** declare `TeamsCapability`, so
+Google accounts get no Teams tab; their Chat *spaces* stay under Chat). Shipped
+and built into the install tree.
+
+- **Capability wiring** mirrors the others: `TeamsCapability` in
+  `core/interfaces.py` (+ `"teams"` in `CAPABILITY_KEYS` and `capabilities_of`),
+  implemented by `Microsoft365Module`; `"teams"` in `window.py` `CAPABILITY_UI`
+  and gated out for personal accounts alongside `"chat"`; view built in
+  `_capability_placeholder`.
+- **New scopes** (`core/auth/msal_graph.py`, requested at sign-in in
+  `window.py`): `SCOPES_CHANNELS` (`Channel.ReadBasic.All`,
+  `ChannelMessage.Read.All`, `ChannelMessage.Send` — **tenant-admin consent**)
+  and `SCOPES_NOTES` (`Notes.ReadWrite.All`, `Notes.Create` — no admin consent).
+  Adding scopes forces existing MS accounts to **Sign Out → Sign In** once; the
+  view shows the shared "Re-sign in" prompt on a scope error.
+- **Graph client** (`modules/microsoft365/graph.py`): `list_joined_teams`
+  (lightweight id+name; **not** the file-mount `list_teams` which returns
+  `Drive`s), `list_team_channels`, `list_channel_messages_page`
+  (`$expand=replies`, normalized via `_channel_message_row`), `send/
+  reply_channel_message`; OneNote against the **group** notebook
+  (`/groups/{teamId}/onenote/…`): `list_notebooks`, `list_note_sections`,
+  `list_note_pages`, `get_note_page` (raw HTML), `create_note_page`
+  (`_post_html`, text/html), `update_note_page` (JSON replace command), and
+  `fetch_note_image` (bearer-authenticated image bytes).
+- **`widgets/teams_view.py`**: `Adw.NavigationSplitView` — sidebar of teams
+  (`Adw.ExpanderRow`, channels lazy-loaded on expand), content = a channel with
+  an inner `Adw.ViewStack`/`ViewSwitcher` of **Conversation** + **Notes**.
+  Conversation renders posts as cards (subject/sender/time/body, threaded
+  replies, per-post reply entry, bottom composer); image attachments are inline
+  thumbnails and files are chips, matching `chat_view`. Notes = Section + Page
+  dropdowns + full-width reader.
+- **Notes rendering is NATIVE, not WebKit** (important): OneNote pages are long;
+  a full-page WebView snapshot overran the GPU texture limit and segfaulted in
+  `gsk_gpu_upload_cairo_op` (GTK 4.22, Intel/Mesa, Wayland; `WEBKIT_DISABLE_
+  DMABUF_RENDERER=1` is already set, so WebKit falls back to one big cairo
+  surface). `_render_note_body` walks the page HTML, splitting `<img>` from
+  text: text → wrapping labels (`_html_to_pango`/`_strip_html` reused from
+  `graph.py`), images → lazy native `GdkTexture` thumbnails, all in a scrolled
+  `Adw.Clamp`. Editing seeds the rich-text editor from **plain text**, so
+  existing formatting is lost on save of an existing page (new pages full
+  fidelity) — known v1 limitation, next to improve.
+- **Release/CI**: `io.github.sha5b.Cloudy.yml` no longer builds
+  `blueprint-compiler` from gitlab.gnome.org (SDK 48+ bundles it) — a 503 there
+  had broken the 0.2.0 release build.
+
+Verified: `make build` + `make install` + 4 meson tests green; `make lint`;
+headless instantiate + render of `TeamsView` (teams/channels/posts, note body,
+attachment paths). GUI not yet eyeballed for this exact build — ask the user to
+`make run` and open Teams → channel → Conversation/Notes.
+
+## ⏭ Continue here — Chat scroll smoothness + animations (2026-06-15, earlier)
 
 Polish pass over the Chat thread's scrolling and motion (`widgets/chat_view.py`,
 `data/style.css`). Builds + 4 meson tests green; headless widget import verified.

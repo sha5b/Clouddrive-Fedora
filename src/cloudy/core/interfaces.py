@@ -76,7 +76,7 @@ class ModuleContext:
 
 
 #: Ordered capability keys. The UI maps these to translated labels and icons.
-CAPABILITY_KEYS = ("files", "mail", "calendar", "chat")
+CAPABILITY_KEYS = ("files", "mail", "calendar", "chat", "teams")
 
 
 def capabilities_of(obj) -> list[str]:
@@ -90,6 +90,8 @@ def capabilities_of(obj) -> list[str]:
         caps.append("calendar")
     if isinstance(obj, ChatCapability):
         caps.append("chat")
+    if isinstance(obj, TeamsCapability):
+        caps.append("teams")
     return caps
 
 
@@ -144,4 +146,30 @@ class ChatCapability(ABC):
 
     @abstractmethod
     def send_chat_message(self, chat_id: str, text: str):
+        ...
+
+
+class TeamsCapability(ABC):
+    """Teams (org) → channels → channel content (Conversation + OneNote Notes).
+
+    Distinct from :class:`ChatCapability` (flat 1:1/group chats): this is the
+    hierarchical Team/channel surface. Microsoft-only — Google Chat spaces have
+    no channel/notes hierarchy. Normalized dict shapes::
+
+        team:    {id, name}
+        channel: {id, name, description}
+        post:    {id, subject, text, from, sent, is_mine, replies: [post], ...}
+    """
+
+    @abstractmethod
+    def list_teams(self) -> list:
+        ...
+
+    @abstractmethod
+    def list_team_channels(self, team_id: str) -> list:
+        ...
+
+    @abstractmethod
+    def list_channel_messages(self, team_id: str, channel_id: str, *,
+                              limit: int = 20) -> list:
         ...
