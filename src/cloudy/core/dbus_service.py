@@ -15,7 +15,6 @@ Status values returned by StatusForPath:
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -56,8 +55,8 @@ class SyncStatusService:
     """Registers the Sync object on an existing D-Bus connection.
 
     ``mount_root`` is the directory holding Cloudy mounts; status is derived
-    from it plus ``os.path.ismount``. ``share_link_fn(path, editable) -> str`` is
-    optional and used for CreateShareLink.
+    from it plus the kernel mount table. ``share_link_fn(path, editable) -> str``
+    is optional and used for CreateShareLink.
     """
 
     def __init__(
@@ -94,9 +93,20 @@ class SyncStatusService:
         # A managed mount sits at root/<drive> or root/<account>/<drive> (drives
         # are namespaced per account). Walk up to root; if any ancestor is an
         # active mountpoint, the path lives on a mounted Cloudy drive.
+        #
+        # We read the kernel mount table (MountManager.active_mounts parses
+        # /proc/self/mountinfo) rather than os.path.ismount(): ismount *stats*
+        # the path, which BLOCKS indefinitely on a hung/slow FUSE network mount
+        # — and this runs on the app's main loop for every Nautilus emblem/menu
+        # query, so a stalled mount would freeze both the app and the file
+        # manager. The mount table never touches the filesystem, so it can't
+        # hang. (Same reasoning as mounts.py::active_mounts.)
+        from ..modules.microsoft365.mounts import MountManager
+
+        active = MountManager.active_mounts()
         node = p
         while True:
-            if os.path.ismount(node):
+            if str(node) in active:
                 return "synced"
             if node == root:
                 return "offline"

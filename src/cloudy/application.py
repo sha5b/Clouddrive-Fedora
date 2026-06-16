@@ -214,6 +214,30 @@ class CloudyApplication(Adw.Application):
             self._sync_started = True
             self.sync_manager.start()
             self.notifier.start()
+            self._log_active_mounts()
+
+    def _log_active_mounts(self) -> None:
+        """Print which Cloudy drives are mounted at startup.
+
+        Checkable in both RPM and Flatpak via the app's stdout / journal
+        (``journalctl --user -t cloudy | grep mounts`` or the launch terminal).
+        Reads the kernel mount table, so it never stalls on a hung FUSE mount.
+        """
+        try:
+            from .modules.microsoft365.mounts import MountManager, mount_root
+
+            root = str(mount_root())
+            mounted = sorted(
+                m for m in MountManager.active_mounts() if m.startswith(root)
+            )
+            if mounted:
+                print(f"[mounts] active Cloudy mounts at startup ({len(mounted)}):")
+                for m in mounted:
+                    print(f"[mounts]   • {m}")
+            else:
+                print("[mounts] no Cloudy drives mounted at startup")
+        except Exception as exc:  # noqa: BLE001 - never block startup on logging
+            print(f"[mounts] could not enumerate mounts: {exc}")
 
     # -- run in background ------------------------------------------------
     def wants_background(self) -> bool:

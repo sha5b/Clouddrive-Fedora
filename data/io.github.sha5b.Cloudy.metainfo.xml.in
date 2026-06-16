@@ -104,6 +104,7 @@ SPDX-FileCopyrightText: 2026 Shahab Nedaei
           <li>Notification settings moved to their own tab; OneNote and Gmail layout fixes</li>
           <li>The mail list now updates on its own when new mail arrives, not only on a manual refresh</li>
           <li>Fixed the Files tab for Microsoft accounts not listing OneDrive and Team libraries</li>
+          <li>File-manager integration no longer stalls the app or Nautilus when a network drive is slow to respond</li>
         </ul>
       </description>
     </release>
