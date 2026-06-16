@@ -4,18 +4,25 @@
 
 import unittest
 
-import gi_setup  # noqa: F401  (pins GI versions before the widget import)
+import gi_setup  # pins GI versions; exposes AVAILABLE
 from fakes import FakeApp, FakeWindow
 
-from cloudy.core.account_registry import Account
-from cloudy.widgets.source_nav import (
-    find_pin,
-    is_muted,
-    is_pinned,
-    is_scope_error,
-    toggle_mute,
-    toggle_pin,
-)
+from cloudy.core.account_registry import Account  # pure — always importable
+
+# source_nav imports Gtk/Adw at module top; only import it when those typelibs
+# exist (they don't in a minimal RPM build chroot), else skip the gi-bound tests.
+if gi_setup.AVAILABLE:
+    from cloudy.widgets.source_nav import (
+        find_pin,
+        is_muted,
+        is_pinned,
+        is_scope_error,
+        toggle_mute,
+        toggle_pin,
+    )
+
+_skip = unittest.skipUnless(gi_setup.AVAILABLE,
+                            "GTK/Adw typelibs unavailable (headless build)")
 
 
 def _acct():
@@ -23,6 +30,7 @@ def _acct():
                    provider="microsoft", module_id="microsoft365")
 
 
+@_skip
 class TestScopeError(unittest.TestCase):
     def test_detects_scope_phrase(self):
         self.assertTrue(is_scope_error("AADSTS: requested scopes are missing"))
@@ -34,6 +42,7 @@ class TestScopeError(unittest.TestCase):
         self.assertFalse(is_scope_error(None))
 
 
+@_skip
 class TestPins(unittest.TestCase):
     def setUp(self):
         self.app = FakeApp()
@@ -67,6 +76,7 @@ class TestPins(unittest.TestCase):
         self.assertFalse(is_pinned(self.acct, "calendar", "shared", "s@x.com"))
 
 
+@_skip
 class TestMutes(unittest.TestCase):
     def setUp(self):
         self.app = FakeApp()
