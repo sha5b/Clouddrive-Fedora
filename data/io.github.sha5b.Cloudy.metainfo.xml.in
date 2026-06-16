@@ -106,6 +106,7 @@ SPDX-FileCopyrightText: 2026 Shahab Nedaei
           <li>Fixed the Files tab for Microsoft accounts not listing OneDrive and Team libraries</li>
           <li>File-manager integration no longer stalls the app or Nautilus when a network drive is slow to respond</li>
           <li>The Mail and Chat tabs now show a live unread-count badge, like the account list</li>
+          <li>Inline images in the mail composer now appear after you insert them, and you can paste an image straight from the clipboard with Ctrl+V</li>
         </ul>
       </description>
     </release>

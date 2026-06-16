@@ -58,6 +58,14 @@ class RichTextEditor(Gtk.Box):
         self._buffer.connect_after("insert-text", self._on_inserted)
         self._buffer.connect("mark-set", self._on_mark_set)
 
+        # Intercept Ctrl+V so an image on the clipboard becomes an inline
+        # image; plain GtkTextView paste only handles text, so without this a
+        # screenshot or copied image silently does nothing.
+        keys = Gtk.EventControllerKey()
+        keys.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        keys.connect("key-pressed", self._on_key_pressed)
+        self._view.add_controller(keys)
+
         scroll = Gtk.ScrolledWindow(vexpand=True, hexpand=True,
                                     hscrollbar_policy=Gtk.PolicyType.NEVER,
                                     child=self._view)
@@ -365,6 +373,33 @@ class RichTextEditor(Gtk.Box):
             return
         self.insert_image(bytes(data), ctype)
 
+    def _on_key_pressed(self, _ctrl, keyval, _code, state) -> bool:
+        """On Ctrl+V, paste an image from the clipboard if one is present;
+        otherwise fall through to the TextView's normal text paste."""
+        ctrl = state & Gdk.ModifierType.CONTROL_MASK
+        shift = state & Gdk.ModifierType.SHIFT_MASK
+        if not ctrl or shift or keyval not in (Gdk.KEY_v, Gdk.KEY_V):
+            return False
+        clipboard = self._view.get_clipboard()
+        formats = clipboard.get_formats()
+        if not formats.contain_gtype(Gdk.Texture):
+            return False  # no image → let the default text paste run
+        clipboard.read_texture_async(None, self._on_paste_texture)
+        return True  # consume; we're handling this paste
+
+    def _on_paste_texture(self, clipboard, result) -> None:
+        try:
+            texture = clipboard.read_texture_finish(result)
+        except GLib.Error:
+            return
+        if texture is None:
+            return
+        try:
+            data = texture.save_to_png_bytes()
+        except Exception:  # noqa: BLE001 - unencodable texture
+            return
+        self.insert_image(bytes(data.get_data()), "image/png")
+
     def insert_image(self, data: bytes, content_type: str) -> None:
         """Insert ``data`` as an inline image at the cursor."""
         try:
@@ -375,7 +410,12 @@ class RichTextEditor(Gtk.Box):
         anchor = self._buffer.create_child_anchor(insert)
         self._images[anchor] = (data, content_type or "image/png")
         picture = Gtk.Picture.new_for_paintable(texture)
-        picture.set_can_shrink(True)
+        # Pin to the (downscaled) texture's size and DON'T let it shrink —
+        # otherwise GtkPicture collapses to 0×0 inside the TextView anchor and
+        # the image is inserted but invisible ("loads then disappears").
+        picture.set_can_shrink(False)
+        picture.set_halign(Gtk.Align.START)
+        picture.set_size_request(texture.get_width(), texture.get_height())
         picture.add_css_class("cloudy-bubble-image")
         self._view.add_child_at_anchor(picture, anchor)
 
