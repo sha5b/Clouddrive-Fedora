@@ -4,9 +4,19 @@
 
 import unittest
 
-from cloudy.modules.microsoft365.graph import GraphClient, GraphError, _split_id
+# graph.py pulls in core.auth.msal_graph -> `import msal`, an app runtime dep
+# that isn't present in a minimal RPM build chroot. Skip rather than error there
+# (the helpers under test are pure; they just live behind that import).
+try:
+    from cloudy.modules.microsoft365.graph import GraphClient, GraphError, _split_id
+    _OK = True
+except ImportError:
+    _OK = False
+
+_skip = unittest.skipUnless(_OK, "msal not installed (graph import unavailable)")
 
 
+@_skip
 class TestSplitId(unittest.TestCase):
     def test_splits_exact_count(self):
         self.assertEqual(_split_id("shared:a@x.com:AAA", 3),
@@ -22,6 +32,7 @@ class TestSplitId(unittest.TestCase):
             _split_id("justone", 3)
 
 
+@_skip
 class TestMessageScope(unittest.TestCase):
     def test_personal_message(self):
         base, raw, scopes = GraphClient._message_scope("AAA")
@@ -34,6 +45,7 @@ class TestMessageScope(unittest.TestCase):
         self.assertEqual(raw, "AAA")
 
 
+@_skip
 class TestEventsFromJson(unittest.TestCase):
     def test_normalizes_fields(self):
         data = {"value": [{
