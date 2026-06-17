@@ -506,8 +506,9 @@ class ChatView(Adw.Bin):
         so it doesn't collide with presence)."""
         overlay = Gtk.Overlay(valign=Gtk.Align.CENTER)
         face = Adw.Avatar(size=38)
-        # Flat avatar: one calm accent fill for everyone instead of Adw.Avatar's
-        # per-name rainbow of auto-assigned colours.
+        # Flat avatar: kill Adw.Avatar's glossy per-name gradient, then give each
+        # person ONE flat solid colour picked deterministically from our own
+        # palette (so the same contact always gets the same calm, flat fill).
         face.add_css_class("cloudy-avatar-flat")
         if is_meeting:
             face.set_show_initials(False)
@@ -515,6 +516,7 @@ class ChatView(Adw.Bin):
         else:
             face.set_show_initials(True)
             face.set_text(chat.get("name", "") or "?")
+            face.add_css_class(f"cloudy-avatar-c{self._avatar_color_index(chat)}")
         overlay.set_child(face)
         overlay._presence_dot = None  # tracked so presence updates swap it in place
         # Presence dot — only for 1:1 chats (a single "other" member whose
@@ -534,9 +536,21 @@ class ChatView(Adw.Bin):
             overlay.add_overlay(udot)
         return overlay
 
+    # -- avatar colour ----------------------------------------------------
+    # Flat per-person palette (CSS classes cloudy-avatar-c0…cN in style.css).
+    _AVATAR_COLORS = 8
+
+    def _avatar_color_index(self, chat) -> int:
+        """Pick a stable palette slot for a contact — a plain byte-sum hash so
+        the same person always gets the same flat colour across launches
+        (Python's built-in hash() is salted per process, so we avoid it)."""
+        key = (chat.get("name") or chat.get("id") or "?")
+        return sum(key.encode("utf-8")) % self._AVATAR_COLORS
+
     # -- presence ---------------------------------------------------------
-    # Graph availability values → (css state class, human label). Anything not
-    # listed (Offline, PresenceUnknown, "") shows no dot.
+    # Graph availability values → (css state class, human label). A known-but-
+    # unmapped value (and Offline/Unknown) falls back to a grey "offline" dot,
+    # so once presence is fetched a 1:1 chat always shows *some* indicator.
     _PRESENCE = {
         "Available": ("available", _("Available")),
         "AvailableIdle": ("available", _("Available")),
@@ -545,6 +559,9 @@ class ChatView(Adw.Bin):
         "Busy": ("busy", _("Busy")),
         "BusyIdle": ("busy", _("Busy")),
         "DoNotDisturb": ("dnd", _("Do not disturb")),
+        "Offline": ("offline", _("Offline")),
+        "PresenceUnknown": ("offline", _("Offline")),
+        "OffWork": ("offline", _("Off work")),
     }
 
     def _presence_dot_for(self, chat) -> Gtk.Widget | None:
@@ -557,14 +574,16 @@ class ChatView(Adw.Bin):
         return self._presence_dot(avail)
 
     def _presence_dot(self, availability: str) -> Gtk.Widget | None:
-        info = self._PRESENCE.get(availability)
-        if info is None:
-            return None
-        dot = Gtk.Image.new_from_icon_name("media-record-symbolic")
-        dot.set_pixel_size(12)
+        if not availability:
+            return None  # presence not fetched yet — no dot
+        state, label = self._PRESENCE.get(availability, ("offline", availability))
+        # A CSS-drawn circle (a sized box with a rounded background + ring) — no
+        # dependency on a symbolic icon being present in the runtime theme.
+        dot = Gtk.Box(halign=Gtk.Align.END, valign=Gtk.Align.END)
+        dot.set_size_request(13, 13)
         dot.add_css_class("cloudy-presence")
-        dot.add_css_class(f"cloudy-presence-{info[0]}")
-        dot.set_tooltip_text(info[1])
+        dot.add_css_class(f"cloudy-presence-{state}")
+        dot.set_tooltip_text(label)
         return dot
 
     def _refresh_presence(self) -> None:
@@ -591,8 +610,23 @@ class ChatView(Adw.Bin):
     def _on_presence(self, result, error) -> bool:
         if error or not result:
             return False
-        changed = self._presence != result
-        self._presence.update(result)
+        # Merge, but never DOWNGRADE a known availability to a blank/unknown one.
+        # Graph returns presence from two paths — the chat-list batch
+        # (``_refresh_presence``) and the per-chat member fetch (``_on_members``,
+        # fired ~1s after a chat opens) — and the second often comes back
+        # "PresenceUnknown"/"" for someone the first already resolved. Letting
+        # that overwrite the good value made a dot that just appeared vanish a
+        # second later. Keep the better, previously-known value instead.
+        merged = dict(self._presence)
+        for uid, info in result.items():
+            avail = (info or {}).get("availability", "")
+            if avail in ("", "PresenceUnknown", "Offline") and uid in merged:
+                known = (merged[uid] or {}).get("availability", "")
+                if known not in ("", "PresenceUnknown", "Offline"):
+                    continue  # don't clobber a real status with a transient blank
+            merged[uid] = info
+        changed = merged != self._presence
+        self._presence = merged
         # Patch the dots on existing rows IN PLACE — rebuilding the whole list
         # here would drop the selection and scroll back to the top every refresh.
         if changed and not self._search_mode:

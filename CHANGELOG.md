@@ -25,13 +25,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   spot.
 
 ### Changed
-- **Flat chat avatars**: chat avatars use one calm accent colour for everyone
-  instead of a per-name rainbow.
+- **Flat chat avatars**: chat avatars use a flat, solid per-person colour from a
+  calm 8-colour palette (stable per contact) instead of Adwaita's glossy
+  per-name gradient rainbow.
 - **Instant scroll on send**: every sent message (including images) now appears
   and scrolls to the bottom immediately via an optimistic echo, instead of
   waiting for the server round-trip.
 
 ### Fixed
+- **Flat avatars now actually apply**: the override targeted the wrong CSS node
+  (Adw.Avatar's colour lives on an internal child gizmo, not the widget the
+  class was on), so the gradient rainbow stayed visible. The selector now reaches
+  the inner node.
+- **Chat presence dots are reliable**: the online/away/busy indicator on 1:1
+  chats no longer flickers in and disappear. A transient `PresenceUnknown` from
+  the per-chat member fetch could overwrite a freshly-resolved status; presence
+  is now merged without downgrading a known value. The dot is also drawn in CSS
+  (not a symbolic icon) so it can't go missing in a runtime without that icon,
+  and offline/unknown now shows a grey dot.
 - **Large images no longer crash the renderer**: chat and OneNote images are now
   downscaled *while* decoding, so a very large picture (a OneNote scan, a
   high-res screenshot) can't exhaust memory or overrun the GPU texture limit.
