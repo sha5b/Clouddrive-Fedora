@@ -362,17 +362,6 @@ class MountManager:
         finally:
             self.delete_remote(probe)
 
-    # OneDrive convenience wrappers (kept for the Microsoft module).
-    def authorize_onedrive(self, timeout: int = 300) -> str:
-        return self.authorize("onedrive", timeout=timeout)
-
-    def create_onedrive_remote(
-        self, remote: str, token_json: str, drive_id: str, drive_type: str
-    ) -> None:
-        self.create_remote(remote, "onedrive", {
-            "token": token_json, "drive_id": drive_id, "drive_type": drive_type,
-        })
-
     def delete_remote(self, remote: str) -> None:
         if self._rclone_binary() and self.has_remote(remote):
             subprocess.run(self._rclone_argv("config", "delete", remote), check=False)

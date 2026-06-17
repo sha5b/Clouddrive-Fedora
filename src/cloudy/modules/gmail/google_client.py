@@ -668,10 +668,6 @@ class GoogleClient:
         with urllib.request.urlopen(req, timeout=30) as resp:
             return resp.read()
 
-    def send_chat_image(self, chat_id: str, image: bytes,
-                        content_type: str = "image/png", text: str = "") -> dict:
-        raise GoogleError("Sending images isn't supported for Google Chat yet.")
-
     def send_chat_images(self, chat_id: str, images, text: str = "") -> dict:
         raise GoogleError("Sending images isn't supported for Google Chat yet.")
 
@@ -692,9 +688,6 @@ class GoogleClient:
         return []  # no cross-space message search wired for Google Chat
 
     def set_reaction(self, chat_id: str, message_id: str, emoji: str) -> None:
-        raise GoogleError("Reactions aren't supported for Google Chat yet.")
-
-    def unset_reaction(self, chat_id: str, message_id: str, emoji: str) -> None:
         raise GoogleError("Reactions aren't supported for Google Chat yet.")
 
     # -- presence / read state / group management -------------------------

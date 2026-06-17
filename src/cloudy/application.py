@@ -187,14 +187,20 @@ class CloudyApplication(Adw.Application):
         def worker():
             try:
                 from .core.provisioner import (
-                    ensure_host_nautilus_extension,
                     ensure_rclone,
+                    set_host_nautilus_extension,
                 )
 
                 ensure_rclone(log=lambda m: print(f"[provision] {m}"))
-                # In Flatpak, place the host Nautilus extension on first run.
-                ensure_host_nautilus_extension(
-                    log=lambda m: print(f"[provision] {m}"))
+                # Install/remove the host Nautilus extension to match the
+                # user's toggle (default on).
+                enabled = True
+                try:
+                    enabled = self.settings.get_boolean("nautilus-extension-enabled")
+                except Exception:  # noqa: BLE001 - never block startup on settings
+                    pass
+                set_host_nautilus_extension(
+                    enabled, log=lambda m: print(f"[provision] {m}"))
             except Exception as exc:  # noqa: BLE001 - never block startup
                 print(f"[provision] rclone not provisioned: {exc}")
 

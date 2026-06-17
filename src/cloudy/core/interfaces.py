@@ -75,10 +75,6 @@ class ModuleContext:
 # checks isinstance() to decide which UI surfaces to offer.
 
 
-#: Ordered capability keys. The UI maps these to translated labels and icons.
-CAPABILITY_KEYS = ("files", "mail", "calendar", "chat", "teams")
-
-
 def capabilities_of(obj) -> list[str]:
     """Return the capability keys an object supports, in display order."""
     caps = []

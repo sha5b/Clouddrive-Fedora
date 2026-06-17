@@ -511,6 +511,12 @@ class TeamsView(Adw.Bin):
             head.append(when)
         box.append(head)
 
+        # A replied-to message renders as a small quote (accent bar + author +
+        # snippet) instead of a bogus "attachment" chip.
+        reply = msg.get("reply_to")
+        if reply and (reply.get("text") or reply.get("from")):
+            box.append(self._reply_quote(reply))
+
         text = (msg.get("text", "") or "").strip()
         markup = (msg.get("markup", "") or "").strip()
         if text or markup:
@@ -546,6 +552,30 @@ class TeamsView(Adw.Bin):
                 chip.add_css_class("cloudy-reaction")
                 rbox.append(chip)
             box.append(rbox)
+        return box
+
+    @staticmethod
+    def _reply_quote(reply) -> Gtk.Widget:
+        """A compact quote of the message a post/reply is answering: an accent
+        bar, the quoted author and a one-line snippet."""
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        box.add_css_class("cloudy-reply-quote")
+        bar = Gtk.Box()
+        bar.add_css_class("cloudy-reply-bar")
+        box.append(bar)
+        inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True)
+        who = (reply.get("from") or "").strip() or _("Message")
+        wlbl = Gtk.Label(label=esc(who), xalign=0,
+                         ellipsize=Pango.EllipsizeMode.END)
+        wlbl.add_css_class("caption-heading")
+        inner.append(wlbl)
+        snippet = (reply.get("text") or _("(image)")).replace("\n", " ").strip()
+        slbl = Gtk.Label(label=snippet[:120], xalign=0,
+                         ellipsize=Pango.EllipsizeMode.END)
+        slbl.add_css_class("caption")
+        slbl.add_css_class("dim-label")
+        inner.append(slbl)
+        box.append(inner)
         return box
 
     def _attachment_chip(self, att) -> Gtk.Widget:
@@ -613,18 +643,28 @@ class TeamsView(Adw.Bin):
     @staticmethod
     def _texture_from_bytes(data: bytes, max_px: int):
         """Decode image bytes into a Gdk.Texture, downscaled so its longest
-        side is at most ``max_px`` (keeps the GPU upload well under the texture
-        limit and avoids huge thumbnails)."""
+        side is at most ``max_px``.
+
+        Scaling happens *during* decode (the loader's ``size-prepared`` signal),
+        so a huge OneNote image is never fully decoded into memory first — this
+        keeps the GPU upload under the texture limit and stops an over-large page
+        image from crashing the renderer."""
         loader = GdkPixbuf.PixbufLoader()
+
+        def _on_size(ldr, w, h):
+            if w <= 0 or h <= 0:
+                return
+            longest = max(w, h)
+            if longest > max_px:
+                scale = max_px / longest
+                ldr.set_size(max(1, int(w * scale)), max(1, int(h * scale)))
+
+        loader.connect("size-prepared", _on_size)
         loader.write(data)
         loader.close()
         pb = loader.get_pixbuf()
-        w, h = pb.get_width(), pb.get_height()
-        longest = max(w, h) or 1
-        if longest > max_px:
-            scale = max_px / longest
-            pb = pb.scale_simple(max(1, int(w * scale)), max(1, int(h * scale)),
-                                 GdkPixbuf.InterpType.BILINEAR)
+        if pb is None:
+            raise ValueError("undecodable image")
         return Gdk.Texture.new_for_pixbuf(pb)
 
     def _send_post(self) -> None:

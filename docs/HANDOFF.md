@@ -12,7 +12,139 @@ Calendar)** and **Google (Gmail, Calendar, Drive)** on Fedora 44 (GNOME 50). It
 for mail/calendar) rather than reimplementing them. Read `docs/ARCHITECTURE.md`,
 `docs/AUTH.md`, `docs/SECRETS.md`, `docs/ROADMAP.md` for depth.
 
-## ⏭ Continue here — Command palette + offline cache (2026-06-16, latest)
+## ⏭ Continue here — Chat/Teams/OneNote rework (2026-06-17, latest)
+
+**Where we stopped.** Reworked the Chat surface and hardened Teams/OneNote per a
+bug-sweep request. All green (`make build` + 5 meson tests) and verified
+headlessly (module imports + the new Graph reply-parse helpers). **Not yet
+eyeballed — `make run`** and check Chat (avatars, replies, live list, image
+send-scroll) and a large OneNote page.
+
+### Chat (`widgets/chat_view.py`, `data/style.css`)
+- **Flat avatars.** `_avatar` adds the `cloudy-avatar-flat` style class; CSS
+  overrides `Adw.Avatar`'s per-name rainbow (`.color1–.color14`) with one calm
+  accent fill (`avatar.cloudy-avatar-flat` in `style.css`).
+- **Live chat list.** New `ChatView.refresh_live()` re-fetches the chat list so a
+  new message bumps its conversation to the top (and lights its unread mark)
+  without a manual refresh — mirrors Mail. Wired: `notifications._on_chat` →
+  `window.refresh_account_chat` → `view.refresh_live()` (only for the shown
+  account; skipped while a search is active). The open thread keeps its own 5/30s
+  adaptive poll. `_render_filtered` now re-selects the open chat after a live
+  re-render.
+- **Reply quotes.** Graph now parses Teams `messageReference` attachments into a
+  `reply_to` dict (see below) instead of a bare "attachment" chip. `_bubble`
+  renders a clickable quote (accent bar + author + snippet) above the body;
+  clicking it calls `_scroll_to_message(id)` which scrolls to and flashes the
+  original (or toasts "scroll up to load older" if it isn't loaded). Styles:
+  `.cloudy-reply-quote` / `.cloudy-reply-bar` / `.cloudy-bubble-flash`.
+- **Immediate scroll on send.** Optimistic echo now covers *every* send (was
+  plain-text only): `_render_pending(chat_id, text, images)` renders attached
+  images straight from memory via `_local_image_widget` (no fetch round-trip), so
+  an image/rich send appears and scrolls to the bottom instantly instead of after
+  the ~1.5s reconcile poll.
+- **Image decode is memory-safe.** `_thumb_texture` (chat) and
+  `_texture_from_bytes` (teams) now downscale *during* decode via the loader's
+  `size-prepared` signal, so a huge source image (a OneNote scan, a high-res
+  paste) is never fully decoded into memory — fixes OOM/renderer crashes on big
+  images. Both raise `ValueError` on an undecodable payload (callers already
+  catch).
+
+### Graph (`modules/microsoft365/graph.py`)
+- `_strip_reply_placeholder` drops the `<attachment id=…>` placeholder Teams
+  leaves where the quoted message goes. `_parse_message_reference` turns a
+  `messageReference` attachment's JSON (`messageId`/`messagePreview`/sender) into
+  `{id, text, from}`. `_split_attachments` pulls the reply quote out of the
+  attachment list. Both `_chat_message_row` and `_channel_message_row` now return
+  a `reply_to` field and a cleaned body.
+
+### Teams (`widgets/teams_view.py`)
+- `_message_block` renders the same reply quote (`_reply_quote`) for channel
+  posts/replies, so a quoted channel reply shows its text instead of "attachment".
+
+### Cross-tab bug sweep (same session)
+Fixed alongside the chat rework after a per-tab review:
+- **Mail:** `message_view.make_message_page` now escapes the NavigationPage title
+  (subjects with `&`/`<` no longer blank it); `mail_view._populate_folders` /
+  `_on_folder_changed` use `.get("id")` instead of hard subscripts (a folder
+  missing `id` no longer `KeyError`s).
+- **Calendar:** `_delete_selected` uses `r._ev.get("id")` (was `r._ev["id"]`
+  inside the filter — `KeyError` on an id-less event); `_on_groups_loaded` does
+  `"Group.Read" in str(error)` (was `in error` → `TypeError` on a non-string
+  error); `event_window._on_loaded` escapes the `StatusPage` description.
+- **Files:** `file_browser._show_status` escapes `StatusPage` title/description;
+  the right-click `Popover` is `unparent()`-ed on `closed` (was leaking one per
+  right-click); imported `format.esc`.
+- **Command palette:** Down/Tab and Up/Shift+Tab now wrap around (Tab no longer
+  dead-ends on the last row).
+- **Styling:** added the `.cloudy-bubble-image` rule (rounded corners on inline
+  chat/channel/OneNote thumbnails — was referenced but undefined).
+
+### Full audit + cleanup pass (same session)
+A four-angle review (performance / lifecycle-leaks / backend-clients / code-quality)
+was run. Fixed now (safe, verified, all green):
+- **Flat avatars actually work now.** GTK4 CSS has no `!important` (it errors
+  "junk at end of value" — that's why the first attempts silently failed). The
+  rule is plain longhand at `PRIORITY_APPLICATION`. Also: this is a single-instance
+  app, so a still-running instance must be quit for CSS to reload.
+- **Dead code removed:** `message_view.make_message_page`, `chat_view._initials` +
+  `_QUICK_REACTIONS`, `RichTextEditor.is_empty`, `graph.site_by_path`,
+  `send_chat_image`/`unset_reaction` (graph + google_client), `window._account_menu_button`,
+  `interfaces.CAPABILITY_KEYS`, `dashboard._pretty_day` (dup), `mounts.authorize_onedrive`/
+  `create_onedrive_remote`. (`Account.is_business` was *kept* — it's covered by the
+  unit suite.)
+- **ChatView teardown was reverted.** A first attempt stopped the poll/presence
+  timers on `unrealize`, but `Adw.ViewStack` unrealizes the hidden Chat page on
+  tab switch, so it killed presence dots permanently (timer never restarted).
+  The timers already self-cancel via their `get_root() is None` checks, so the
+  orphan-timer leak is minor and accepted; a targeted teardown (only on real
+  account removal) is the proper future fix.
+- **Popover leaks:** chat emoji + members popovers and the rich-editor link
+  popover now `unparent()` on `closed`.
+- **Dashboard:** mail and calendar fetches are now separate try-blocks that log
+  the failure, so one provider's scope error no longer silently blanks the whole
+  account's overview.
+
+### Biggest remaining wins — NOT done (architectural; need GUI/live-API testing, get sign-off)
+1. **Auth/client is rebuilt on every request** (`widgets/clients.py` →
+   `core/auth/msal_graph.py`): each `build_account_client` does a synchronous
+   libsecret lookup + deserializes the MSAL cache + builds a new
+   `PublicClientApplication`, and `_me_id`/`_tenant_id` caches (instance-level)
+   are thrown away — so chat polling/presence re-auth-setup every few seconds and
+   issue an extra `/me` per op. **Fix:** memoize one auth object per `account.id`
+   on the app (MSAL is designed to be reused), invalidate on sign-in/out. Highest
+   single perf win; touches auth, so test sign-in after.
+2. **Lazy view construction** (`window._show_account`): every account switch
+   eagerly builds ALL five tab views and fires ~6 concurrent network loads even
+   though one tab is visible. Build the visible/remembered tab eagerly, the rest
+   on first `notify::visible-child-name`.
+3. **Gmail inbox is a serial N+1** (`google_client.list_messages_page`): one
+   blocking GET per message. Parallelize with a ThreadPoolExecutor (pattern
+   already in `list_events`) or use the Gmail batch endpoint.
+4. **Image decode on the main thread** in chat/teams `done()` callbacks and
+   `message_view.html_body_widget` (inline-image shrink+re-encode) — move the
+   decode into the worker thread.
+5. **Shared-helper dedup** ("AI slop"): one image `texture_from_bytes` (4 copies:
+   media_window/rich_editor/teams_view/chat_view), one `_attachment_chip` (2),
+   one `_reply_quote` (2). Extract to a shared module.
+6. **Live re-render churn:** `chat_view._render_filtered` / `mail_view._render`
+   rebuild the whole ListBox on every notifier tick — diff/patch rows instead.
+7. **Mail `refresh_live` collapses pagination**; **Files** nav race + unbounded
+   FUSE-folder render.
+
+### Known, deliberately NOT fixed here (need live-API verification)
+- **Calendar times may display in UTC, not local.** `_time_label` /
+  `month_grid._chip` / `event_view._format_when` slice the raw ISO `start`
+  (`[:5]`); Graph `calendarView` is fetched without a `Prefer: outlook.timezone`
+  header and ignores the per-event `start.timeZone`, so non-UTC users can see a
+  shifted wall-clock. Also `_format_when` shows no end-date for multi-day/all-day
+  spans. This is a deep, cross-provider (MS + Google) change that must be tested
+  against the live API before touching — flagged, not changed.
+- **Mail `refresh_live` collapses pagination.** A live refresh re-renders only
+  page 1, discarding already-loaded "Load older" pages and resetting scroll.
+- **Files `_load`/`_toggle_expand` last-write-wins race** on rapid navigation
+  (no nav-token guard); `_scan` over a FUSE mount is unbounded for huge folders.
+
+## ⏭ Earlier — Command palette + offline cache (2026-06-16)
 
 **Where we stopped.** Added a keyboard-first command palette and a persistent
 offline cache, then wrapped up the session. All green (`make build` + 4 meson

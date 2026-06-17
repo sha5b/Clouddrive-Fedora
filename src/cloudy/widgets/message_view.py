@@ -327,15 +327,3 @@ def build_message_content(msg: dict, on_open_attachment=None) -> Gtk.Widget:
     box.append(Gtk.Separator())
     box.append(_body_widget(msg))
     return box
-
-
-def make_message_page(msg: dict) -> Adw.NavigationPage:
-    """Build a standalone NavigationPage for one message (single-pane callers)."""
-    toolbar = Adw.ToolbarView()
-    toolbar.add_top_bar(Adw.HeaderBar())
-    toolbar.set_content(build_message_content(msg))
-
-    title = (msg.get("subject") or _("Message"))[:40]
-    page = Adw.NavigationPage(title=title, tag="message")
-    page.set_child(toolbar)
-    return page

@@ -168,6 +168,16 @@ class CloudyWindow(Adw.ApplicationWindow):
         if view is not None:
             view.refresh_live()
 
+    def refresh_account_chat(self, account_id: str) -> None:
+        """Reload the open chat list when the notifier sees new chat activity, so
+        the conversation with the new message bumps to the top live (mirrors
+        refresh_account_mail)."""
+        if self._account_shown != account_id:
+            return
+        view = self._account_chat_view
+        if view is not None and hasattr(view, "refresh_live"):
+            view.refresh_live()
+
     # -- per-account mail folder memory (survives account switches) -------
     def remember_mail_folder(self, account_id: str, folder_id: str) -> None:
         self._mail_folder_by_account[account_id] = folder_id
@@ -368,26 +378,6 @@ class CloudyWindow(Adw.ApplicationWindow):
                     self.sidebar_list.select_row(row)  # emits row-selected
                 return
             row = row.get_next_sibling()
-
-    def _account_menu_button(self, account) -> Gtk.MenuButton:
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, margin_top=6,
-                      margin_bottom=6, margin_start=6, margin_end=6)
-        if account.signed_in:
-            resync = Gtk.Button(label=_("Sign Out / Re-sign In"))
-            resync.add_css_class("flat")
-            resync.connect("clicked", lambda *_: self._sign_out(account))
-            box.append(resync)
-        remove = Gtk.Button(label=_("Remove Account"))
-        remove.add_css_class("flat")
-        remove.add_css_class("destructive-action")
-        remove.connect("clicked", lambda *_: self._remove_account(account))
-        box.append(remove)
-
-        popover = Gtk.Popover()
-        popover.set_child(box)
-        menu = Gtk.MenuButton(icon_name="view-more-symbolic", tooltip_text=_("Account"))
-        menu.set_popover(popover)
-        return menu
 
     def _sign_out(self, account) -> None:
         app = self.get_application()

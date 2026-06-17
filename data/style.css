@@ -94,6 +94,17 @@
   color: @error_color;
 }
 
+/* Flat chat avatar: one solid accent fill for everyone, overriding Adw.Avatar's
+   per-name auto-assigned rainbow (`avatar.color1`–`.color14`, each a
+   `background-image: linear-gradient`). The doubled class raises specificity
+   above Adwaita's `avatar.colorN` so this wins the cascade no matter how the
+   theme provider is prioritised. NO !important — GTK4 CSS rejects it. */
+avatar.cloudy-avatar-flat.cloudy-avatar-flat {
+  background-image: none;
+  background-color: alpha(@window_fg_color, 0.12);
+  color: @window_fg_color;
+}
+
 /* Teams-style presence dot overlaid on a chat avatar (bottom-right). The white
    ring lifts it off the avatar art the way Teams/GNOME do. */
 .cloudy-presence {
@@ -103,6 +114,12 @@
 .cloudy-presence-busy      { color: @error_color; }
 .cloudy-presence-dnd       { color: @error_color; }
 .cloudy-presence-away      { color: @warning_color; }
+
+/* Inline image in a chat bubble / channel post / OneNote page — rounded
+   corners so it reads as a contained thumbnail, not a raw raster. */
+.cloudy-bubble-image {
+  border-radius: 8px;
+}
 
 /* Emoji reaction chip under a chat bubble. */
 .cloudy-reaction {
@@ -137,4 +154,30 @@
 }
 .cloudy-bubble-new {
   animation: cloudy-bubble-in 220ms ease-out;
+}
+
+/* A reply quote inside a bubble: an accent bar + the quoted author/snippet.
+   Click it to jump to the original message. */
+.cloudy-reply-quote {
+  border-radius: 6px;
+  padding: 2px 6px 2px 2px;
+  margin-bottom: 2px;
+  background-color: alpha(currentColor, 0.06);
+}
+.cloudy-reply-bar {
+  min-width: 3px;
+  border-radius: 3px;
+  background-color: alpha(@accent_bg_color, 0.9);
+}
+.cloudy-bubble.mine .cloudy-reply-bar {
+  background-color: alpha(@accent_fg_color, 0.9);
+}
+
+/* Briefly flash a message when the user jumps to it from a reply quote. */
+@keyframes cloudy-bubble-flash {
+  0%   { background-color: alpha(@accent_bg_color, 0.45); }
+  100% { background-color: alpha(currentColor, 0.08); }
+}
+.cloudy-bubble-flash {
+  animation: cloudy-bubble-flash 1300ms ease-out;
 }

@@ -142,6 +142,16 @@ SPDX-FileCopyrightText: 2026 Shahab Nedaei
       </description>
     </key>
 
+    <key name="nautilus-extension-enabled" type="b">
+      <default>true</default>
+      <summary>Show Cloudy mounts and sync status in the GNOME Files sidebar</summary>
+      <description>
+        When on, the host Nautilus extension is installed so Cloudy's mounted
+        drives and sync emblems appear in GNOME Files. Turning it off removes the
+        per-user extension. Restart Files for the change to take effect.
+      </description>
+    </key>
+
     <key name="accounts" type="s">
       <default>'[]'</default>
       <summary>Configured accounts, serialized as a JSON array</summary>

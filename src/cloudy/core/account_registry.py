@@ -57,7 +57,7 @@ class Account:
     @property
     def is_business(self) -> bool:
         """A signed-in work/school or Workspace account (qualifies for Teams /
-        SharePoint / Chat / shared mailboxes)."""
+        SharePoint / Chat / shared mailboxes). Covered by the unit suite."""
         return self.signed_in and not self.is_personal
 
     def to_dict(self) -> dict:

@@ -151,11 +151,13 @@ class CommandPalette(Adw.Dialog):
             return False
         cur = self._list.get_selected_row()
         idx = rows.index(cur) if cur in rows else -1
+        # Down/Tab and Up/Shift+Tab wrap around, so Tab keeps cycling instead of
+        # silently dead-ending on the last/first row.
         if keyval in (Gdk.KEY_Down, Gdk.KEY_Tab):
-            self._list.select_row(rows[min(len(rows) - 1, idx + 1)])
+            self._list.select_row(rows[(idx + 1) % len(rows)])
             return True
         if keyval in (Gdk.KEY_Up, Gdk.KEY_ISO_Left_Tab):
-            self._list.select_row(rows[max(0, idx - 1)])
+            self._list.select_row(rows[(idx - 1) % len(rows)])
             return True
         return False
 

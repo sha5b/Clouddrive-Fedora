@@ -22,6 +22,7 @@ from pathlib import Path
 
 from gi.repository import Adw, Gio, GLib, Gtk, Pango
 
+from .format import esc
 from .source_nav import run_async
 
 
@@ -590,6 +591,9 @@ class FileBrowserPane(Adw.Bin):
         popover = Gtk.Popover(child=box, has_arrow=True)
         popover.set_parent(widget)
         popover.set_pointing_to(_gdk_rect(x, y))
+        # Tear the popover down once dismissed, otherwise each right-click leaks
+        # an unparented-on-popdown popover attached to the row.
+        popover.connect("closed", lambda p: p.unparent() if p.get_parent() else None)
 
         def add(label, handler, *, destructive=False):
             btn = Gtk.Button(label=label)
@@ -730,7 +734,9 @@ class FileBrowserPane(Adw.Bin):
         dialog.open_multiple(self._window, None, on_pick)
 
     def _show_status(self, icon: str, title: str, description: str) -> None:
+        # StatusPage parses title/description as Pango markup — escape both so an
+        # error string or folder name containing '&'/'<' doesn't render blank.
         self._status.set_icon_name(icon)
-        self._status.set_title(title)
-        self._status.set_description(description or None)
+        self._status.set_title(esc(title))
+        self._status.set_description(esc(description) if description else None)
         self._stack.set_visible_child_name("status")

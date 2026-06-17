@@ -56,6 +56,54 @@ def _strip_html(value: str) -> str:
     return html.unescape(re.sub(r"\s+", " ", text)).strip()
 
 
+def _strip_reply_placeholder(content: str) -> str:
+    """Drop the ``<attachment id=…>`` placeholder Teams leaves in a reply's body
+    where the quoted message goes — we render the quote ourselves from the
+    ``messageReference`` attachment, so the empty tag would otherwise show as a
+    stray gap (or a bogus "attachment" chip)."""
+    if not content:
+        return content
+    content = re.sub(r"(?is)<attachment\b[^>]*>.*?</attachment>", "", content)
+    return re.sub(r"(?is)<attachment\b[^>]*/?>", "", content)
+
+
+def _parse_message_reference(att: dict) -> dict:
+    """Turn a Teams ``messageReference`` attachment into a normalized reply quote
+    ``{id, text, from}`` so a replied-to message shows what it was (and can be
+    clicked to jump to the original) instead of rendering as "attachment"."""
+    raw = att.get("content") or ""
+    ref_id = str(att.get("id") or "")
+    preview, sender = "", ""
+    try:
+        data = json.loads(raw) if raw else {}
+        preview = _strip_html(data.get("messagePreview") or "")
+        ref_id = str(data.get("messageId") or ref_id)
+        user = (data.get("messageSender") or {}).get("user") or {}
+        sender = html.unescape(user.get("displayName") or "")
+    except (ValueError, TypeError):
+        pass
+    return {"id": ref_id, "text": preview, "from": sender}
+
+
+def _split_attachments(m: dict):
+    """Split a message's attachments into (reply_to, file/image attachments),
+    pulling out the ``messageReference`` (reply quote) so it isn't rendered as a
+    file chip. Returns ``(reply_to_or_None, [attachment dicts])``."""
+    reply_to = None
+    attachments = []
+    for a in (m.get("attachments") or []):
+        if (a.get("contentType") or "") == "messageReference":
+            if reply_to is None:
+                reply_to = _parse_message_reference(a)
+            continue
+        attachments.append({
+            "name": a.get("name") or "attachment",
+            "url": a.get("contentUrl", ""),
+            "content_type": a.get("contentType", ""),
+        })
+    return reply_to, attachments
+
+
 # HTML inline tags that map cleanly onto Pango markup, so chat bubbles can show
 # the same bold/italic/underline/strike/links Teams renders (instead of flat
 # plain text). Everything else is dropped; block tags become line breaks.
@@ -234,12 +282,6 @@ class GraphClient:
              "web_url": s.get("webUrl", "")}
             for s in data.get("value", [])
         ]
-
-    def site_by_path(self, hostname: str, site_path: str) -> dict:
-        """Resolve a site from a hostname + server-relative path."""
-        data = self._get(f"/sites/{hostname}:{site_path}", SCOPES_FILES)
-        return {"id": data["id"], "name": data.get("displayName", ""),
-                "web_url": data.get("webUrl", "")}
 
     def list_site_drives(self, site_id: str) -> list[Drive]:
         """Document libraries of a SharePoint site (Teams files live here)."""
@@ -1067,13 +1109,12 @@ class GraphClient:
         body = m.get("body") or {}
         content = body.get("content", "")
         is_html = body.get("contentType") == "html"
+        reply_to, attachments = _split_attachments(m)
+        # Strip the reply placeholder so the quoted text doesn't pollute the body
+        # (we render the quote separately from ``reply_to``).
+        if is_html:
+            content = _strip_reply_placeholder(content)
         text = _strip_html(content) if is_html else content
-        attachments = [
-            {"name": a.get("name") or "attachment",
-             "url": a.get("contentUrl", ""),
-             "content_type": a.get("contentType", "")}
-            for a in (m.get("attachments") or [])
-        ]
         # Inline images (pasted screenshots, GIFs) live as <img> in the HTML body
         # via hosted contents. Resolve relative src= to the absolute, auth-gated
         # hosted-content URL so we can fetch + thumbnail them.
@@ -1106,6 +1147,7 @@ class GraphClient:
             "attachments": attachments,
             "reactions": [{"emoji": e, "count": c} for e, c in reactions.items()],
             "web_url": m.get("webUrl", "") or "",
+            "reply_to": reply_to,
         }
 
     def send_chat_message(self, chat_id: str, text: str) -> dict:
@@ -1139,10 +1181,6 @@ class GraphClient:
                 return resp.read()
         except urllib.error.HTTPError as exc:
             raise GraphError(f"{exc.code}: couldn't fetch image") from exc
-
-    def send_chat_image(self, chat_id: str, image: bytes,
-                        content_type: str = "image/png", text: str = "") -> dict:
-        return self.send_chat_images(chat_id, [(image, content_type)], text)
 
     def send_chat_images(self, chat_id: str, images, text: str = "") -> dict:
         """Send one message with ``text`` plus inline image hosted contents (the
@@ -1184,10 +1222,6 @@ class GraphClient:
         *Unicode* character as ``reactionType`` (the old named types like ``like``
         are rejected: "Unicode 'like' … is not supported")."""
         self._post(f"/chats/{chat_id}/messages/{message_id}/setReaction",
-                   {"reactionType": emoji}, SCOPES_CHAT)
-
-    def unset_reaction(self, chat_id: str, message_id: str, emoji: str) -> None:
-        self._post(f"/chats/{chat_id}/messages/{message_id}/unsetReaction",
                    {"reactionType": emoji}, SCOPES_CHAT)
 
     def list_chat_members(self, chat_id: str) -> list[dict]:
@@ -1423,13 +1457,10 @@ class GraphClient:
         body = m.get("body") or {}
         content = body.get("content", "")
         is_html = body.get("contentType") == "html"
+        reply_to, attachments = _split_attachments(m)
+        if is_html:
+            content = _strip_reply_placeholder(content)
         text = _strip_html(content) if is_html else content
-        attachments = [
-            {"name": a.get("name") or "attachment",
-             "url": a.get("contentUrl", ""),
-             "content_type": a.get("contentType", "")}
-            for a in (m.get("attachments") or [])
-        ]
         # Inline images live as <img> in the HTML body via hosted contents;
         # resolve relative src= to the absolute, auth-gated channel URL.
         if is_html and "<img" in content.lower():
@@ -1461,6 +1492,7 @@ class GraphClient:
             "attachments": attachments,
             "reactions": [{"emoji": e, "count": c} for e, c in reactions.items()],
             "web_url": m.get("webUrl", "") or "",
+            "reply_to": reply_to,
             "replies": [],
         }
 

@@ -91,6 +91,19 @@ SPDX-FileCopyrightText: 2026 Shahab Nedaei
   </screenshots>
 
   <releases>
+    <release version="0.2.3" date="2026-06-17">
+      <description>
+        <p>A more live, more robust Chat — plus fixes across the app.</p>
+        <ul>
+          <li>The chat list updates live: a new message moves its conversation to the top and marks it unread, no manual refresh</li>
+          <li>Replies show a clickable quote of the message they answer (and jump to it) instead of a bare "attachment"</li>
+          <li>Flat chat avatars; sent messages appear and scroll to the bottom instantly, including images</li>
+          <li>Large chat and OneNote images are downscaled while decoding, so a huge picture can't crash the renderer</li>
+          <li>New General setting to turn the Nautilus file-manager integration on or off</li>
+          <li>Fixes across Mail, Calendar, Files and the Dashboard (text escaping, a couple of crashes, a popover leak)</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.2.2" date="2026-06-16">
       <description>
         <p>Smarter notifications, Google parity, and a command palette.</p>

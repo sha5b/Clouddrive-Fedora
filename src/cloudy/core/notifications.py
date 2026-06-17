@@ -428,11 +428,13 @@ class NotificationManager:
         unread = self._chat_unread.setdefault(account.id, set())
         muted = self._muted_ids(account, "chat")
         badge_changed = False
+        any_changed = False
         to_notify = []
         for c in chats:
             last = c.get("last_at", "")
             changed = bool(last) and last != seen.get(c["id"])
             seen[c["id"]] = last
+            any_changed = any_changed or changed
             # Only notify/badge for messages from SOMEONE ELSE — your own just-sent
             # message also moves the chat's timestamp, but shouldn't ping you.
             if not (changed and not c.get("from_me")):
@@ -449,6 +451,13 @@ class NotificationManager:
                 self._enqueue_chat(account, c)
         if badge_changed:
             self._push_chat_badge(account.id)
+        # Live-update the open chat list (reorder + unread marks) on any change,
+        # including your own just-sent message bumping a conversation up — the
+        # same liveness the Mail list gets.
+        if any_changed:
+            win = self._app.props.active_window
+            if win is not None and hasattr(win, "refresh_account_chat"):
+                win.refresh_account_chat(account.id)
         for chat, tier in to_notify[:_MAX_MAIL_PER_TICK]:
             self._notify_chat(account, chat, tier)
         return False

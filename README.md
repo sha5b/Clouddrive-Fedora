@@ -54,9 +54,10 @@ mail, calendar & chat — behind one adaptive UI.
   tracker, and **create / edit / delete** events + RSVP.
 - **Chat**: a Teams-style messenger for **Teams chats** (work/school Microsoft
   accounts) and **Google Chat** (Workspace) — 1:1, group and meeting threads,
-  inline images (attach or paste), emoji reactions, @mentions, reply/forward,
-  edit/delete, multi-select, group create + member management, live message
-  updates, presence dots, and message search.
+  inline images (attach or paste), emoji reactions, @mentions, reply/forward
+  (with **clickable reply quotes** that jump to the original message),
+  edit/delete, multi-select, group create + member management, a **live list**
+  that floats new conversations to the top, presence dots, and message search.
 - **Teams** (Microsoft work/school): pick a **team** to browse its **channels**,
   then read a channel's **posts** with threaded replies (and post / reply), or
   open its **Notes** tab — the team's **OneNote** notebook, with sections and

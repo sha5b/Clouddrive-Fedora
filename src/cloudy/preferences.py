@@ -129,7 +129,23 @@ class CloudyPreferences(Adw.PreferencesDialog):
                             Gio.SettingsBindFlags.DEFAULT)
         integ.add(eds)
 
+        nautilus = Adw.SwitchRow(
+            title=_("Nautilus file-manager integration"),
+            subtitle=_("Show Cloudy mounts and sync status in the GNOME Files "
+                       "sidebar (restart Files to apply)."))
+        self._settings.bind("nautilus-extension-enabled", nautilus, "active",
+                            Gio.SettingsBindFlags.DEFAULT)
+        nautilus.connect("notify::active", self._on_nautilus_toggled)
+        integ.add(nautilus)
+
         return page
+
+    def _on_nautilus_toggled(self, row, _param) -> None:
+        """Install or remove the host Nautilus extension to match the toggle."""
+        from .core.provisioner import set_host_nautilus_extension
+
+        set_host_nautilus_extension(
+            row.get_active(), log=lambda m: print(f"[provision] {m}"))
 
     # -- Notifications ----------------------------------------------------
     def _notifications_page(self) -> Adw.PreferencesPage:

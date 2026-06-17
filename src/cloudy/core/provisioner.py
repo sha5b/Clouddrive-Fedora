@@ -42,32 +42,51 @@ def resolve(binary: str) -> str | None:
     return str(local) if local.exists() and os.access(local, os.X_OK) else None
 
 
-def ensure_host_nautilus_extension(log=lambda _m: None) -> None:
-    """Install the Nautilus extension onto the HOST so the file manager loads it.
+def _host_nautilus_extension_dst() -> Path:
+    return (Path.home() / ".local" / "share" / "nautilus-python"
+            / "extensions" / "cloudy_nautilus.py")
 
-    Only needed inside Flatpak: the host Nautilus can't read ``/app``, so we copy
-    the bundled extension to the host's per-user extensions dir (granted via
-    --filesystem). Outside Flatpak this is a no-op — the RPM/host install already
-    placed it on the system search path. Best-effort; never raises. (Flatpak
-    uninstall can't remove it; the uninstall script / purge does.)"""
-    if not os.path.exists("/.flatpak-info"):
-        return
-    src = Path("/app/share/nautilus-python/extensions/cloudy_nautilus.py")
-    if not src.exists():
-        return
-    dst = (Path.home() / ".local" / "share" / "nautilus-python"
-           / "extensions" / "cloudy_nautilus.py")
+
+def _nautilus_extension_source() -> Path | None:
+    """Locate the bundled Nautilus extension across install layouts: Flatpak
+    (/app), a meson/RPM prefix (share/nautilus-python next to share/cloudy), and
+    the dev tree (nautilus-extension/)."""
+    here = Path(__file__).resolve()
+    # parents[3] is the install prefix's share/ (…/share/cloudy/cloudy/core →
+    # share) OR, in the dev tree, the repo root (src/cloudy/core → repo).
+    candidates = [
+        Path("/app/share/nautilus-python/extensions/cloudy_nautilus.py"),
+        here.parents[3] / "nautilus-python" / "extensions" / "cloudy_nautilus.py",
+        here.parents[3] / "nautilus-extension" / "cloudy_nautilus.py",
+    ]
+    return next((p for p in candidates if p.exists()), None)
+
+
+def set_host_nautilus_extension(enabled: bool, log=lambda _m: None) -> None:
+    """Install or remove the per-user host Nautilus extension to match the
+    ``nautilus-extension-enabled`` setting. Best-effort; never raises.
+
+    ``enabled`` copies the bundled extension into the host's per-user extensions
+    dir (the host file manager can't read ``/app`` inside Flatpak); disabling
+    removes that copy. A system-wide RPM copy, if any, isn't touched."""
+    dst = _host_nautilus_extension_dst()
     try:
-        # Compare CONTENT, not mtime: OSTree normalizes bundled file mtimes to a
-        # fixed value, so an mtime check would never detect an app update.
-        new = src.read_bytes()
-        if dst.exists() and dst.read_bytes() == new:
-            return
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        dst.write_bytes(new)
-        log(f"Installed Nautilus extension to {dst}")
+        if enabled:
+            src = _nautilus_extension_source()
+            if src is None:
+                log("Nautilus extension source not found")
+                return
+            new = src.read_bytes()
+            if dst.exists() and dst.read_bytes() == new:
+                return
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_bytes(new)
+            log(f"Installed Nautilus extension to {dst}")
+        elif dst.exists():
+            dst.unlink()
+            log(f"Removed Nautilus extension from {dst}")
     except OSError as exc:
-        log(f"Nautilus extension not installed: {exc}")
+        log(f"Nautilus extension toggle failed: {exc}")
 
 
 def _rclone_arch() -> str:

@@ -23,6 +23,7 @@ from gettext import gettext as _
 from gi.repository import Adw, GLib, Gtk
 
 from .event_time import iso_to_local_naive, local_to_utc_iso, parse_hhmm
+from .format import esc
 from .metrics import WIN_READ
 from .source_nav import run_async
 
@@ -94,7 +95,7 @@ class EventDetailWindow(Adw.Window):
         if error:
             self._content.set_child(Adw.StatusPage(
                 icon_name="dialog-error-symbolic",
-                title=_("Couldn't open event"), description=error))
+                title=_("Couldn't open event"), description=esc(error)))
             return False
         self._event = event
         if event.get("subject"):

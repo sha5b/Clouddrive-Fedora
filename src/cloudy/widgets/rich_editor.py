@@ -262,6 +262,7 @@ class RichTextEditor(Gtk.Box):
         bounds = self._buffer.get_selection_bounds()
         pop = Gtk.Popover()
         pop.set_parent(button)
+        pop.connect("closed", lambda p: p.unparent() if p.get_parent() else None)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6,
                       margin_top=8, margin_bottom=8, margin_start=8, margin_end=8)
         url = Gtk.Entry(placeholder_text=_("https://…"), hexpand=True)
@@ -450,9 +451,6 @@ class RichTextEditor(Gtk.Box):
     def get_plain_text(self) -> str:
         return self._buffer.get_text(
             self._buffer.get_start_iter(), self._buffer.get_end_iter(), False)
-
-    def is_empty(self) -> bool:
-        return not self.get_plain_text().strip() and not self._images
 
     def get_html(self):
         """Serialize the buffer to e-mail HTML.

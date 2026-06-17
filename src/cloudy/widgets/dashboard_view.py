@@ -191,13 +191,20 @@ class DashboardView(Adw.Bin):
                     client = build_account_client(app, account)
                 except Exception:  # noqa: BLE001
                     continue
+                # Separate try-blocks so a calendar failure (e.g. one provider's
+                # scope error) doesn't also wipe this account's mail from the
+                # overview, and vice versa. Log so a persistent fault is
+                # diagnosable instead of the feed just silently going empty.
                 try:
                     for ev in client.list_events(start_iso, end_iso):
                         events.append((account, ev))
+                except Exception as exc:  # noqa: BLE001 - one bad account shouldn't blank the view
+                    print(f"[dashboard] {account.id}: events failed: {exc}")
+                try:
                     for msg in client.list_messages():
                         messages.append((account, msg))
-                except Exception:  # noqa: BLE001 - one bad account shouldn't blank the view
-                    pass
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[dashboard] {account.id}: mail failed: {exc}")
                 # Pinned sources. Mail/calendar pins fold their events + unread
                 # mail into the overview (and list under Pinned). Starred channels
                 # contribute their latest post to the Activity feed.
@@ -834,19 +841,6 @@ def _rel_time(start: str) -> str:
         m = int((delta % 3600) // 60)
         return _("in %dh %02dm") % (h, m) if m else _("in %dh") % h
     return _("in %d days") % int(delta // 86400)
-
-
-def _pretty_day(day: str) -> str:
-    try:
-        d = datetime.strptime(day, "%Y-%m-%d").date()
-    except ValueError:
-        return day or _("Undated")
-    today = datetime.now().date()
-    if d == today:
-        return _("Today · %s") % day
-    if d == today + timedelta(days=1):
-        return _("Tomorrow · %s") % day
-    return d.strftime("%A · %Y-%m-%d")
 
 
 def _ago(mtime: float) -> str:

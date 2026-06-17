@@ -11,6 +11,39 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-06-17
+
+### Added
+- **Live chat list**: a new chat message now bumps its conversation to the top
+  of the Chat list and lights its unread mark immediately — no manual refresh —
+  the same liveness the Mail list already has.
+- **Reply quotes in chat & channels**: a replied-to message renders as a compact
+  quote (author + snippet) above the reply instead of a bare "attachment". Click
+  the quote in a chat to jump to — and briefly flash — the original message.
+- **Nautilus integration toggle**: a new switch in Preferences → General turns
+  the GNOME Files (Nautilus) extension on or off and installs/removes it on the
+  spot.
+
+### Changed
+- **Flat chat avatars**: chat avatars use one calm accent colour for everyone
+  instead of a per-name rainbow.
+- **Instant scroll on send**: every sent message (including images) now appears
+  and scrolls to the bottom immediately via an optimistic echo, instead of
+  waiting for the server round-trip.
+
+### Fixed
+- **Large images no longer crash the renderer**: chat and OneNote images are now
+  downscaled *while* decoding, so a very large picture (a OneNote scan, a
+  high-res screenshot) can't exhaust memory or overrun the GPU texture limit.
+- **Replies no longer show as a bare "attachment"**: a Teams reply's quoted
+  message is parsed and rendered as a quote with its text.
+- Mail message titles, calendar/event error pages, and the Files status page no
+  longer render blank when the text contains `&`/`<` (proper escaping).
+- A mail folder or calendar event missing an `id` no longer crashes folder
+  population / multi-delete.
+- The command palette's Tab key now wraps through results instead of dead-ending.
+- The Files right-click menu no longer leaks a popover per click.
+
 ## [0.2.2] - 2026-06-16
 
 ### Added

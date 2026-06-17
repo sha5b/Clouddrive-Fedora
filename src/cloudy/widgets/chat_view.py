@@ -20,14 +20,6 @@ from gettext import gettext as _
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
 
 
-def _initials(name: str) -> str:
-    parts = [p for p in re.split(r"[\s,]+", name or "") if p]
-    if not parts:
-        return "?"
-    if len(parts) == 1:
-        return parts[0][:2].upper()
-    return (parts[0][0] + parts[-1][0]).upper()
-
 from .format import esc, relative_time
 from .source_nav import (
     SCOPE_HINT,
@@ -299,6 +291,15 @@ class ChatView(Adw.Bin):
                 and adj.get_value() >= adj.get_upper() - adj.get_page_size() - 200):
             self._load_more_chats()
 
+    def refresh_live(self) -> None:
+        """Re-fetch the chat list so a newly-arrived message bumps its
+        conversation to the top (and lights its unread mark) without a manual
+        refresh — the notifier calls this when it sees new chat activity, the
+        same way the Mail list updates live. The open thread has its own poll."""
+        if self.get_root() is None or self._search_mode:
+            return
+        self._load_chats()
+
     def _load_chats(self) -> None:
         cached = self._cache().get(f"{self._account.id}:chats")
         if cached is not None:
@@ -428,6 +429,12 @@ class ChatView(Adw.Bin):
             row = self._chat_row(chat)
             self._list.append(row)
             self._rows_by_id[chat["id"]] = row
+        # Keep the open conversation highlighted after a live re-render (the row
+        # is a brand-new widget, so the previous selection is gone).
+        if self._chat_id is not None:
+            open_row = self._rows_by_id.get(self._chat_id)
+            if open_row is not None:
+                self._list.select_row(open_row)
         # "Load older conversations" — only when not filtering by a search query.
         self._chats_more_row = None
         if not self._query and self._chats_next_token:
@@ -499,6 +506,9 @@ class ChatView(Adw.Bin):
         so it doesn't collide with presence)."""
         overlay = Gtk.Overlay(valign=Gtk.Align.CENTER)
         face = Adw.Avatar(size=38)
+        # Flat avatar: one calm accent fill for everyone instead of Adw.Avatar's
+        # per-name rainbow of auto-assigned colours.
+        face.add_css_class("cloudy-avatar-flat")
         if is_meeting:
             face.set_show_initials(False)
             face.set_icon_name("x-office-calendar-symbolic")
@@ -742,6 +752,7 @@ class ChatView(Adw.Bin):
     def _on_show_members(self, button) -> None:
         pop = Gtk.Popover()
         pop.set_parent(button)
+        pop.connect("closed", lambda p: p.unparent() if p.get_parent() else None)
         self._members_pop = pop
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8,
                       margin_top=10, margin_bottom=10, margin_start=10, margin_end=10)
@@ -869,6 +880,7 @@ class ChatView(Adw.Bin):
     def _on_emoji_picker(self, button) -> None:
         pop = Gtk.Popover()
         pop.set_parent(button)
+        pop.connect("closed", lambda p: p.unparent() if p.get_parent() else None)
         flow = Gtk.FlowBox(max_children_per_line=6, min_children_per_line=6,
                            selection_mode=Gtk.SelectionMode.NONE,
                            margin_top=6, margin_bottom=6, margin_start=6, margin_end=6)
@@ -1389,6 +1401,63 @@ class ChatView(Adw.Bin):
         self._set_status(widget, "sending" if not m.get("id") else "sent")
         icon.set_visible(True)
 
+    def _reply_quote(self, reply) -> Gtk.Widget:
+        """A compact quote of the message being replied to: an accent bar, the
+        author and a one-line snippet. Clicking it scrolls to the original."""
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        box.add_css_class("cloudy-reply-quote")
+        bar = Gtk.Box()
+        bar.add_css_class("cloudy-reply-bar")
+        box.append(bar)
+        inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0,
+                        hexpand=True)
+        who = (reply.get("from") or "").strip() or _("Message")
+        wlbl = Gtk.Label(label=who, xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        wlbl.add_css_class("caption-heading")
+        inner.append(wlbl)
+        snippet = (reply.get("text") or _("(image)")).replace("\n", " ").strip()
+        slbl = Gtk.Label(label=snippet[:120], xalign=0, wrap=False,
+                         ellipsize=Pango.EllipsizeMode.END)
+        slbl.add_css_class("caption")
+        slbl.add_css_class("dim-label")
+        inner.append(slbl)
+        box.append(inner)
+        rid = reply.get("id")
+        if rid:
+            box.set_cursor(Gdk.Cursor.new_from_name("pointer", None))
+            tap = Gtk.GestureClick(button=Gdk.BUTTON_PRIMARY)
+            # Claim the sequence so the click doesn't also toggle the bubble's
+            # own primary-click (selection) handler.
+            tap.connect("pressed", lambda g, *_a: g.set_state(
+                Gtk.EventSequenceState.CLAIMED))
+            tap.connect("released", lambda *_a: self._scroll_to_message(rid))
+            box.add_controller(tap)
+        return box
+
+    def _scroll_to_message(self, mid) -> None:
+        """Scroll the thread to a specific message and flash it. If it isn't
+        loaded yet (it's older than what's on screen), nudge the user to load
+        older history rather than jumping nowhere."""
+        widget = self._bubble_widgets.get(mid)
+        if widget is None or widget.get_parent() is not self._thread:
+            self._window.add_toast(
+                _("That message isn't loaded yet — scroll up to load older messages."))
+            return
+        coords = widget.translate_coordinates(self._thread, 0, 0)
+        if coords is None:
+            return
+        adj = self._thread_scroll.get_vadjustment()
+        target = max(0.0, min(coords[1] - 24,
+                              adj.get_upper() - adj.get_page_size()))
+        self._autoscroll = False
+        self._anchor_bottom = adj.get_upper() - target
+        self._to_bottom_btn.set_visible(True)
+        self._set_scroll(adj, target)
+        flash = getattr(widget, "_bubble", widget)
+        flash.add_css_class("cloudy-bubble-flash")
+        GLib.timeout_add(1300, lambda: (
+            flash.remove_css_class("cloudy-bubble-flash"), False)[1])
+
     def _bubble(self, msg) -> Gtk.Widget:
         mine = bool(msg.get("is_mine"))
         outer = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
@@ -1410,6 +1479,12 @@ class ChatView(Adw.Bin):
                 lbl.add_css_class("caption-heading")
                 bubble.append(lbl)
 
+        # A replied-to message renders as a clickable quote above the body —
+        # click it to jump to (and flash) the original message.
+        reply = msg.get("reply_to")
+        if reply and (reply.get("text") or reply.get("from")):
+            bubble.append(self._reply_quote(reply))
+
         text = (msg.get("text", "") or "").strip()
         markup = (msg.get("markup", "") or "").strip()
         if text or markup:
@@ -1424,7 +1499,12 @@ class ChatView(Adw.Bin):
             bubble.append(body)
 
         for att in msg.get("attachments", []) or []:
-            if (att.get("content_type") or "").lower().startswith("image") and att.get("url"):
+            is_image = (att.get("content_type") or "").lower().startswith("image")
+            if att.get("data") is not None and is_image:
+                local = self._local_image_widget(att)  # optimistic echo, no fetch
+                if local is not None:
+                    bubble.append(local)
+            elif is_image and att.get("url"):
                 bubble.append(self._image_widget(att))
             else:
                 bubble.append(self._attachment_chip(att))
@@ -1481,6 +1561,7 @@ class ChatView(Adw.Bin):
         tap = Gtk.GestureClick(button=Gdk.BUTTON_PRIMARY)
         tap.connect("pressed", lambda g, _n, _x, _y: self._on_bubble_primary(msg, g))
         bubble.add_controller(tap)
+        outer._bubble = bubble  # the styled inner box (for the jump-to flash)
         return outer
 
     # -- multi-select mode ------------------------------------------------
@@ -1579,8 +1660,6 @@ class ChatView(Adw.Bin):
             self._delete_msg(m, None)
 
     # -- per-message actions popover --------------------------------------
-    _QUICK_REACTIONS = ("👍", "❤️", "😆", "😮", "😢", "😠")
-
     def _reaction_popover(self, msg) -> Gtk.Popover:
         pop = Gtk.Popover()
         flow = Gtk.FlowBox(max_children_per_line=6, min_children_per_line=6,
@@ -1633,18 +1712,30 @@ class ChatView(Adw.Bin):
     @staticmethod
     def _thumb_texture(data: bytes, max_edge: int):
         """Decode image bytes and downscale to ``max_edge`` (longest side),
-        returning a small Gdk.Texture so the widget's natural size stays tiny."""
+        returning a small Gdk.Texture so the widget's natural size stays tiny.
+
+        Scaling happens *during* decode (via the loader's ``size-prepared``
+        signal), so a huge source image is never fully decoded into memory — this
+        keeps the GPU upload well under the texture limit and stops a very large
+        image (a OneNote scan, a high-res screenshot) from OOM-ing or crashing
+        the renderer."""
         from gi.repository import GdkPixbuf
 
         loader = GdkPixbuf.PixbufLoader()
+
+        def _on_size(ldr, w, h):
+            if w <= 0 or h <= 0:
+                return
+            scale = min(1.0, max_edge / w, max_edge / h)
+            if scale < 1.0:
+                ldr.set_size(max(1, int(w * scale)), max(1, int(h * scale)))
+
+        loader.connect("size-prepared", _on_size)
         loader.write(data)
         loader.close()
         pix = loader.get_pixbuf()
-        w, h = pix.get_width(), pix.get_height()
-        scale = min(1.0, max_edge / w, max_edge / h)
-        if scale < 1.0:
-            pix = pix.scale_simple(max(1, int(w * scale)), max(1, int(h * scale)),
-                                   GdkPixbuf.InterpType.BILINEAR)
+        if pix is None:
+            raise ValueError("undecodable image")
         return Gdk.Texture.new_for_pixbuf(pix)
 
     def _image_widget(self, att) -> Gtk.Widget:
@@ -1702,6 +1793,17 @@ class ChatView(Adw.Bin):
 
         run_async(work, done)
         return box
+
+    def _local_image_widget(self, att) -> Gtk.Widget | None:
+        """Render an already-in-memory image (an optimistic echo of a just-sent
+        attachment) directly — no download, so it shows the instant you hit
+        Send."""
+        data = att.get("data")
+        try:
+            texture = self._thumb_texture(data, self._THUMB_MAX)
+        except Exception:  # noqa: BLE001 - undecodable → skip the thumbnail
+            return None
+        return self._picture_for(texture, data, att.get("name") or "image")
 
     def _picture_for(self, texture, data: bytes, name: str) -> Gtk.Picture:
         """Build a click-to-open Picture pinned to a decoded thumbnail texture."""
@@ -2126,10 +2228,11 @@ class ChatView(Adw.Bin):
                     chat_id, f"<div>{content}</div>", mention_array, images)
             return client.send_chat_message(chat_id, text)
 
-        if not rich:  # optimistic echo for plain text
-            self._render_pending(chat_id, text)
-        else:
-            self._window.add_toast(_("Sending…"))
+        # Optimistic echo for every send (plain or rich): the message bubble —
+        # with any attached images rendered straight from memory — appears and
+        # the thread scrolls to the bottom immediately, instead of waiting for
+        # the server round-trip + reconcile poll.
+        self._render_pending(chat_id, text, images)
         run_async(work, lambda _r, error: self._on_message_sent(chat_id, error))
 
     _MD_BOLD = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
@@ -2161,8 +2264,8 @@ class ChatView(Adw.Bin):
         content = cls._MD_ITALIC.sub(r"<i>\1</i>", content)
         return content.replace("\n", "<br>"), out
 
-    def _render_pending(self, chat_id, text) -> None:
-        if chat_id != self._chat_id or not text:
+    def _render_pending(self, chat_id, text, images=None) -> None:
+        if chat_id != self._chat_id or (not text and not images):
             return
         first = self._thread.get_first_child()
         if isinstance(first, Gtk.Label):  # clear the "no messages" hint
@@ -2173,10 +2276,20 @@ class ChatView(Adw.Bin):
         from datetime import datetime
 
         now_iso = datetime.now().astimezone().isoformat()
+        # Echo any attached images straight from memory (no fetch round-trip).
+        attachments = [{"content_type": ctype or "image/png", "data": data,
+                        "name": "image"} for data, ctype in (images or [])]
         bubble = self._bubble(
-            {"text": text, "is_mine": True, "sent": now_iso, "from": ""})
+            {"text": text, "is_mine": True, "sent": now_iso, "from": "",
+             "attachments": attachments})
         self._thread.append(bubble)
         self._animate_in(bubble)
+        # Show the clock straight away so the Sending→Sent affordance is visible
+        # during the optimistic window (the reconcile poll flips it to a check).
+        self._set_status(bubble, "sending")
+        icon = getattr(bubble, "_status_icon", None)
+        if icon is not None:
+            icon.set_visible(True)
         # Remember this echo so the authoritative reload adopts THIS widget in
         # place (status flips Sending→Sent) rather than rebuilding the thread.
         self._optimistic = {"widget": bubble, "text": text}

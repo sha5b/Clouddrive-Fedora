@@ -390,13 +390,14 @@ class MailView(Adw.Bin):
         self._folder_dd.set_model(
             Gtk.StringList.new([self._label(f) for f in folders] or [_("None")]))
         self._folder_dd.set_sensitive(bool(folders))
-        idx = next((i for i, f in enumerate(folders) if f["id"] == self._folder_id), 0)
+        idx = next((i for i, f in enumerate(folders)
+                    if f.get("id") == self._folder_id), 0)
         self._folder_dd.set_selected(idx)
         self._suppress = False
         if not folders:
             self._set_placeholder(_("No folders."))
             return
-        fid = folders[idx]["id"]
+        fid = folders[idx].get("id", "")
         if not (initial and fid == self._folder_id):
             self._select_folder(fid)
 
@@ -405,8 +406,8 @@ class MailView(Adw.Bin):
             return
         folders = getattr(self, "_folder_items", [])
         idx = dropdown.get_selected()
-        if 0 <= idx < len(folders) and folders[idx]["id"] != self._folder_id:
-            self._select_folder(folders[idx]["id"])
+        if 0 <= idx < len(folders) and folders[idx].get("id") != self._folder_id:
+            self._select_folder(folders[idx].get("id", ""))
 
     def _load_shared_folders(self, address) -> None:
         cached = self._shared_folders.get(address)

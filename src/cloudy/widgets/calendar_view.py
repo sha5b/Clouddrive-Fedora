@@ -330,7 +330,7 @@ class CalendarView(Adw.Bin):
     def _on_groups_loaded(self, groups, error) -> bool:
         if error is not None:
             self._groups = []
-            if is_scope_error(error) or "Group.Read" in error:
+            if is_scope_error(error) or "Group.Read" in str(error):
                 self._reauth_prompt()
             else:
                 self._set_message(_("Couldn't load teams: %s") % error)
@@ -454,7 +454,7 @@ class CalendarView(Adw.Bin):
             return
         rows = [r for r in self._list.get_selected_rows()
                 if getattr(r, "_ev", None) is not None]
-        ids = [r._ev["id"] for r in rows if r._ev.get("id")]
+        ids = [r._ev.get("id") for r in rows if r._ev.get("id")]
         if not ids:
             return
         for row in rows:  # optimistic removal

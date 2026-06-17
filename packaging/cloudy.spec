@@ -13,7 +13,7 @@
 %global appid io.github.sha5b.Cloudy
 
 Name:           cloudy
-Version:        0.2.2
+Version:        0.2.3
 Release:        1%{?dist}
 Summary:        Use OneDrive, SharePoint and unified mail on your desktop
 
@@ -115,6 +115,15 @@ meson test -C %{_vpath_builddir} --print-errorlogs
 %{_datadir}/%{name}/
 
 %changelog
+* Wed Jun 17 2026 Shahab Nedaei <ned.tabulov@gmail.com> - 0.2.3-1
+- Chat: live conversation list (new messages bump to the top), clickable reply
+  quotes that jump to the original message, flat avatars, instant scroll on send.
+- Large chat/OneNote images are downscaled while decoding so they can't crash the
+  renderer. Replies no longer show as a bare "attachment".
+- New General setting to toggle the Nautilus file-manager integration.
+- Bug-fix sweep across Mail/Calendar/Files/Dashboard (escaping, KeyErrors, a
+  popover leak) and dead-code/cleanup pass.
+
 * Tue Jun 16 2026 Shahab Nedaei <ned.tabulov@gmail.com> - 0.2.2-1
 - Notification attention controls (DND, quiet hours, relevance level, per-chat/
   channel mute) with batched digest alerts; Google multi-calendar and Drive
