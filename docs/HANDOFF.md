@@ -12,14 +12,31 @@ Calendar)** and **Google (Gmail, Calendar, Drive)** on Fedora 44 (GNOME 50). It
 for mail/calendar) rather than reimplementing them. Read `docs/ARCHITECTURE.md`,
 `docs/AUTH.md`, `docs/SECRETS.md`, `docs/ROADMAP.md` for depth.
 
-## ⏭ Continue here — 0.2.3 released + avatar/presence fixes (2026-06-17, latest)
+## ⏭ Continue here — 0.2.4 released: RSVP + Activity feed (2026-06-18, latest)
 
-**Where we stopped.** Shipped **v0.2.3** to GitHub (Actions `release.yml` ran on
-the `v0.2.3` tag → built RPM + Flatpak with secrets, attached both; release notes
-are the 0.2.3 CHANGELOG section). The user's local Flatpak was reinstalled from
-the bundle, so the running app == the release. Commit `fab15e5`, pushed to
-`main`. **Done and verified** (build + headless smoke + the user eyeballed flat
-colours and working presence dots).
+**Where we stopped.** Shipped **v0.2.4**: calendar RSVP now works for Microsoft
+*and* Google (Google gained `respond_event`, which patches your attendee status —
+calendar is writable, the old `can_respond=False` was just unimplemented);
+unanswered invites render dimmed-but-clickable in the agenda/grid
+(`responseStatus` is now in the list query). Meeting-invite **emails** show
+Accept/Tentative/Decline that send a standards `METHOD:REPLY` iMIP via the new
+`core/ics.py` (parser + reply builder). New **Activity** tab (`widgets/
+activity_view.py`) — first tab, default-selected — aggregates recent mail +
+upcoming/unanswered invites + recent chats; for Microsoft it adds Teams-style
+"reacted to your message" / "mentioned you" from `GraphClient.recent_chat_
+activity()` (bounded scan of the 8 most-recent chats). Image viewer
+(`media_window.py`) gained scroll-zoom + drag-pan; multi-image chat messages lay
+out as an `Adw.WrapBox` gallery. Mail composer has an `isReadReceiptRequested`
+toggle (Microsoft only). Local Flatpak reinstalled from the bundle (running app
+== release). **Verified**: build + `make test` (5/5) + headless smoke/unit tests
+for each piece; **not yet eyeballed in the GUI** by the user.
+
+### Read receipts — the standing limitation
+Neither Graph nor Google exposes whether *another* person read your **chat**
+message; it's a private Teams feature. The chat status glyph stays Sent/Sending
+(see `_status_glyph` in `chat_view.py`). **Email** is the only place a read
+receipt is possible — implemented via Graph `isReadReceiptRequested`, gated to
+Microsoft accounts in the composer.
 
 ### What was actually wrong (and fixed) in the chat avatars/presence
 - **Flat avatars never applied** — the killer detail: `Adw.Avatar`'s coloured

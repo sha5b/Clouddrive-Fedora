@@ -91,6 +91,20 @@ SPDX-FileCopyrightText: 2026 Shahab Nedaei
   </screenshots>
 
   <releases>
+    <release version="0.2.4" date="2026-06-18">
+      <description>
+        <p>Meeting invitations you can answer, and a new Activity feed.</p>
+        <ul>
+          <li>Accept, Tentative or Decline calendar invites — now working for both Microsoft and Google accounts, with your current answer shown clearly</li>
+          <li>Invites you haven't answered still appear in the calendar, dimmed and clickable, so you don't miss them</li>
+          <li>Meeting-invite emails now carry Accept / Tentative / Decline buttons that reply to the organiser with a standard calendar response</li>
+          <li>New Activity tab — the first tab on launch — a single feed of recent mail, upcoming and unanswered invites, recent chats, plus "reacted to your message" and "mentioned you"</li>
+          <li>The image viewer now zooms with the scroll wheel and pans by dragging</li>
+          <li>Several images in one chat message show as a wrapping gallery instead of a tall stack</li>
+          <li>Optional read-receipt request when composing mail (Microsoft accounts)</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.2.3" date="2026-06-17">
       <description>
         <p>A more live, more robust Chat — plus fixes across the app.</p>

@@ -11,6 +11,35 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-06-18
+
+### Added
+- **Calendar RSVP for everyone**: Accept / Tentative / Decline now works for both
+  Microsoft and Google accounts (Google gained `respond_event`, which patches
+  your attendee status and notifies the organiser). The event detail shows your
+  current answer above the buttons, Teams-style.
+- **Unanswered invites are visible**: invites you haven't replied to now appear in
+  the agenda and month grid — dimmed with a "needs reply" marker but still
+  clickable — instead of being invisible. Declined events are struck through.
+- **Reply to meeting invites from Mail**: an invite email shows Accept / Tentative
+  / Decline buttons. Answering sends a standards-based `METHOD:REPLY` iMIP
+  message back to the organiser (`core/ics.py`), so RSVP works for Google,
+  external and forwarded invites — not just ones in your calendar.
+- **Activity tab**: a new per-account tab — first in the row and selected on a
+  fresh launch — that aggregates recent mail, upcoming and unanswered invites,
+  and recent chats into one time-sorted feed. Each row deep-links into its tab.
+  For Microsoft it also surfaces Teams-style "X reacted to your message" and
+  "X mentioned you" from a bounded scan of your most-recent chats.
+- **Read-receipt request**: a toggle in the mail composer asks the recipient's
+  client to confirm they opened the message (Microsoft `isReadReceiptRequested`;
+  shown only for Microsoft accounts, as consumer Gmail has no equivalent).
+
+### Changed
+- **Image viewer**: scroll the wheel to zoom and drag to pan; the toolbar gains
+  zoom-in / zoom-out / fit buttons (default stays fit-to-window).
+- **Chat galleries**: several images in one message lay out as a wrapping gallery
+  rather than a vertical stack.
+
 ## [0.2.3] - 2026-06-17
 
 ### Added

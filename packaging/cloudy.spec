@@ -13,7 +13,7 @@
 %global appid io.github.sha5b.Cloudy
 
 Name:           cloudy
-Version:        0.2.3
+Version:        0.2.4
 Release:        1%{?dist}
 Summary:        Use OneDrive, SharePoint and unified mail on your desktop
 
@@ -115,6 +115,16 @@ meson test -C %{_vpath_builddir} --print-errorlogs
 %{_datadir}/%{name}/
 
 %changelog
+* Thu Jun 18 2026 Shahab Nedaei <ned.tabulov@gmail.com> - 0.2.4-1
+- Calendar RSVP (Accept/Tentative/Decline) now works for both Microsoft and
+  Google; unanswered invites show in the calendar dimmed but clickable.
+- Meeting-invite emails carry Accept/Decline buttons that send a standard
+  calendar reply (iMIP) to the organiser.
+- New Activity tab: a notifier feed of recent mail, invites and chats, plus
+  Teams-style "reacted to your message" / "mentioned you".
+- Image viewer gains scroll-zoom and drag-pan; multi-image chat messages show
+  as a wrapping gallery. Optional read-receipt request when composing mail.
+
 * Wed Jun 17 2026 Shahab Nedaei <ned.tabulov@gmail.com> - 0.2.3-1
 - Chat: live conversation list (new messages bump to the top), clickable reply
   quotes that jump to the original message, flat avatars, instant scroll on send.
