@@ -5,16 +5,16 @@ SPDX-FileCopyrightText: 2026 Shahab Nedaei
 
 # Cloudy — Handoff / Continue Here
 
-Pick-up doc for a fresh session. Cloudy is a **GTK4 / Libadwaita (Python /
+Cloudy is a **GTK4 / Libadwaita (Python /
 PyGObject)** super-app for **Microsoft 365 (OneDrive + Teams/SharePoint, Mail,
 Calendar)** and **Google (Gmail, Calendar, Drive)** on Fedora 44 (GNOME 50). It
-*orchestrates* proven backends (rclone for mounts; Microsoft Graph / Google REST
+orchestrates proven backends (rclone for mounts; Microsoft Graph / Google REST
 for mail/calendar) rather than reimplementing them. Read `docs/ARCHITECTURE.md`,
 `docs/AUTH.md`, `docs/SECRETS.md`, `docs/ROADMAP.md` for depth.
 
-## ⏭ Continue here — 0.2.4 released: RSVP + Activity feed (2026-06-18, latest)
+## 0.2.4 released: RSVP + Activity feed (2026-06-18)
 
-**Where we stopped.** Shipped **v0.2.4**: calendar RSVP now works for Microsoft
+**v0.2.4**: calendar RSVP now works for Microsoft
 *and* Google (Google gained `respond_event`, which patches your attendee status —
 calendar is writable, the old `can_respond=False` was just unimplemented);
 unanswered invites render dimmed-but-clickable in the agenda/grid
@@ -28,8 +28,8 @@ activity()` (bounded scan of the 8 most-recent chats). Image viewer
 (`media_window.py`) gained scroll-zoom + drag-pan; multi-image chat messages lay
 out as an `Adw.WrapBox` gallery. Mail composer has an `isReadReceiptRequested`
 toggle (Microsoft only). Local Flatpak reinstalled from the bundle (running app
-== release). **Verified**: build + `make test` (5/5) + headless smoke/unit tests
-for each piece; **not yet eyeballed in the GUI** by the user.
+== release). **Verified**: build + `make test` (5/5) + headless smoke/unit tests.
+Not yet GUI-verified.
 
 ### Read receipts — the standing limitation
 Neither Graph nor Google exposes whether *another* person read your **chat**
@@ -71,7 +71,7 @@ Microsoft accounts in the composer.
   time. Locally, `make release` builds RPM + Flatpak bundle and reinstalls the
   bundle so the running app matches.
 
-## ⏭ Earlier — Chat/Teams/OneNote rework (2026-06-17)
+## Chat/Teams/OneNote rework (2026-06-17)
 
 **Where we stopped.** Reworked the Chat surface and hardened Teams/OneNote per a
 bug-sweep request. All green (`make build` + 5 meson tests) and verified
@@ -184,7 +184,7 @@ was run. Fixed now (safe, verified, all green):
 4. **Image decode on the main thread** in chat/teams `done()` callbacks and
    `message_view.html_body_widget` (inline-image shrink+re-encode) — move the
    decode into the worker thread.
-5. **Shared-helper dedup** ("AI slop"): one image `texture_from_bytes` (4 copies:
+5. **Shared-helper dedup**: one image `texture_from_bytes` (4 copies:
    media_window/rich_editor/teams_view/chat_view), one `_attachment_chip` (2),
    one `_reply_quote` (2). Extract to a shared module.
 6. **Live re-render churn:** `chat_view._render_filtered` / `mail_view._render`
@@ -205,7 +205,7 @@ was run. Fixed now (safe, verified, all green):
 - **Files `_load`/`_toggle_expand` last-write-wins race** on rapid navigation
   (no nav-token guard); `_scan` over a FUSE mount is unbounded for huge folders.
 
-## ⏭ Earlier — Command palette + offline cache (2026-06-16)
+## Command palette + offline cache (2026-06-16)
 
 **Where we stopped.** Added a keyboard-first command palette and a persistent
 offline cache, then wrapped up the session. All green (`make build` + 4 meson
@@ -257,7 +257,7 @@ and press **Ctrl+K**; relaunch offline to confirm mail/agenda still render.
   week/day calendar views, unified cross-account inbox/agenda, Tasks. See the
   ROADMAP "still to do" + the earlier P2 notes below.
 
-## ⏭ Earlier — Google feature parity: multi-calendar + Drive sources (2026-06-16)
+## Google feature parity: multi-calendar + Drive sources (2026-06-16)
 
 **Where we stopped.** Closed the implementable Google-vs-Microsoft gaps. All green
 (`make build` + 4 meson tests + `make lint`) and verified headlessly (calendar
@@ -313,7 +313,7 @@ deliberately skipped:
   Shared-with-me is testable on personal; Shared Drives + the rclone `backend
   drives` JSON shape need a Workspace account to confirm.
 
-## ⏭ Earlier — P2 #1 notification batching/digest (2026-06-16)
+## P2 #1 notification batching/digest (2026-06-16)
 
 **Where we stopped.** Implemented the first P2 item: batched (digest) notifications.
 Also (earlier this session) split notification settings onto their own
@@ -347,7 +347,7 @@ against the installed schema). **Not yet eyeballed in the GUI — ask the user t
   and a dedicated **Quiet hours** group. General keeps a slimmed **Background**
   group (run-in-background + EDS calendar). Several subtitles clarified.
 
-## ⏭ Earlier — Attention/notifications (P1) + chat status polish (2026-06-15)
+## Attention/notifications (P1) + chat status polish (2026-06-15)
 
 **Where we stopped.** Finished a research-driven notifications pass ("P1") and a
 round of chat-bubble polish. Everything below is built into `_install`, all
@@ -415,7 +415,7 @@ add more signals. P1 below implements the delivery-gating half.
    Caveat the research itself flagged: no direct evidence was found on
    threading-vs-linear or grounding/search — treat those as a separate pass.
 
-## ⏭ Earlier — Dashboard Activity + chat/notes fixes (2026-06-15)
+## Dashboard Activity + chat/notes fixes (2026-06-15)
 
 - **Dashboard "Activity" feed** (`widgets/dashboard_view.py`): a new section
   (shown when there's a work/school MS account) with two groups — **Team
@@ -448,7 +448,7 @@ Verified: `make build` + 4 meson tests + `make lint`; headless instantiate of
 Dashboard/Teams/Chat/Mail (MS + Gmail) and render of the Activity section with
 fake data. GUI not yet eyeballed — ask the user to `make run`.
 
-## ⏭ Earlier — Teams tab: channels + OneNote (2026-06-15, v0.2.1)
+## Teams tab: channels + OneNote (2026-06-15, v0.2.1)
 
 A new top-level **Teams** capability/tab, distinct from the flat **Chat** tab.
 Microsoft work/school only (`gmail` does **not** declare `TeamsCapability`, so
@@ -501,7 +501,7 @@ headless instantiate + render of `TeamsView` (teams/channels/posts, note body,
 attachment paths). GUI not yet eyeballed for this exact build — ask the user to
 `make run` and open Teams → channel → Conversation/Notes.
 
-## ⏭ Continue here — Chat scroll smoothness + animations (2026-06-15, earlier)
+## Chat scroll smoothness + animations (2026-06-15, earlier)
 
 Polish pass over the Chat thread's scrolling and motion (`widgets/chat_view.py`,
 `data/style.css`). Builds + 4 meson tests green; headless widget import verified.
@@ -546,7 +546,7 @@ confirmed present in this libadwaita binding before use.
   The cache is **in-memory only** (cleared on restart); persisting it to disk for
   an instant cold start is a possible future win, not done.
 
-## ⏭ Continue here — Chat capability + UX session (2026-06-15, later)
+## Chat capability + UX session (2026-06-15, later)
 
 A large session that added a **Chat capability** (Teams chats / Google Chat) and
 polished Mail/Calendar. Everything below is shipped and built into the
@@ -658,7 +658,7 @@ them forces existing accounts to Sign Out → Sign In once**.
 - Not feasible for a delegated desktop client (don't promise): typing indicators,
   read receipts, mute/pin/hide chat, true push (we poll), threaded chat replies.
 
-## ⏭ Continue here — earlier session (2026-06-15)
+## earlier session (2026-06-15)
 
 ### Done this session
 - **Inline event edit** (NEXT #1, see below) — shipped + built into RPM/Flatpak.
@@ -742,7 +742,7 @@ them forces existing accounts to Sign Out → Sign In once**.
 likely-wrong parent UID so it may never publish. Full per-finding detail is in
 the session transcript.
 
-## ⏭ Continue here — session (2026-06-14)
+## session (2026-06-14)
 
 A very large session. **Everything below is built + reinstalled into the Flatpak,
 but NOT committed to git** — first task next time: review the working tree and

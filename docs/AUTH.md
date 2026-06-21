@@ -11,8 +11,8 @@ Tokens are stored via **libsecret**, never in plaintext.
 
 ## Microsoft Graph (Entra ID app registration)
 
-> **For end users this is already done** — Cloudy ships a multi-tenant
-> client ID, so signing in is one click (browser → consent). The steps below are
+> **For end users**: Cloudy ships a multi-tenant client ID, so signing in is
+> just browser → consent. The steps below are
 > only for the project maintainer registering that shared app, or for users who
 > set `CLOUDY_MS_CLIENT_ID` / the `microsoft-client-id` setting to their own.
 

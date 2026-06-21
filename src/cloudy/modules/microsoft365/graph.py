@@ -541,15 +541,31 @@ class GraphClient:
         scope_base, raw_id, scopes = self._message_scope(message_id)
         data = self._get(
             f"{scope_base}/messages/{raw_id}"
-            f"?$select=subject,from,toRecipients,receivedDateTime,body,bodyPreview,"
-            f"hasAttachments",
+            f"?$select=subject,from,toRecipients,ccRecipients,bccRecipients,"
+            f"receivedDateTime,body,bodyPreview,hasAttachments",
             scopes,
         )
         sender = (data.get("from") or {}).get("emailAddress", {})
-        to = ", ".join(
-            r.get("emailAddress", {}).get("address", "")
-            for r in data.get("toRecipients", [])
-        )
+        # Keep the sender's address alongside the name (RFC 5322 "Name <addr>",
+        # matching the Gmail client) so the reader can reveal the real address on
+        # hover — a name-only ``from`` hid who actually sent it, and also left
+        # Reply with no address to send to. ``sender_name()`` still strips this
+        # back to just the name for list/title display.
+        sname = (sender.get("name") or "").strip()
+        saddr = (sender.get("address") or "").strip()
+        if sname and saddr and sname != saddr:
+            from_disp = f"{sname} <{saddr}>"
+        else:
+            from_disp = sname or saddr
+        def _addrs(recipients) -> str:
+            return ", ".join(
+                r.get("emailAddress", {}).get("address", "")
+                for r in (recipients or [])
+            )
+
+        to = _addrs(data.get("toRecipients"))
+        cc = _addrs(data.get("ccRecipients"))
+        bcc = _addrs(data.get("bccRecipients"))
         body = data.get("body") or {}
         content = body.get("content", "")
         # NB: meetingMessageType (which would let us synthesize a "X accepted"
@@ -561,8 +577,10 @@ class GraphClient:
         return {
             "id": message_id,
             "subject": html.unescape(data.get("subject", "(no subject)")),
-            "from": html.unescape(sender.get("name") or sender.get("address", "")),
+            "from": html.unescape(from_disp),
             "to": html.unescape(to),
+            "cc": html.unescape(cc),
+            "bcc": html.unescape(bcc),
             "received": data.get("receivedDateTime", ""),
             "body": content,
             "body_html": body.get("contentType") == "html",
@@ -1342,8 +1360,9 @@ class GraphClient:
     def _tenant_id(self) -> str:
         """The signed-in user's tenant id, decoded from the access token's
         ``tid`` claim (cached). Needed for the markChatReadForUser identity."""
-        if getattr(self, "_cached_tenant_id", None):
-            return self._cached_tenant_id
+        cached = getattr(self, "_cached_tenant_id", None)
+        if cached is not None:  # "" is a valid (resolved-but-empty) result
+            return cached
         token = self._token_provider(SCOPES_CHAT) or ""
         tid = ""
         try:
@@ -1399,11 +1418,9 @@ class GraphClient:
             "@odata.type": "#microsoft.graph.aadUserConversationMember",
             "roles": ["owner"],
             "user@odata.bind": f"{BASE_URL}/users('{recipient}')",
-            "visibleHistoryStartDateTime":
-                "0001-01-01T00:00:00Z" if share_history else None,
         }
-        if not share_history:
-            del body["visibleHistoryStartDateTime"]
+        if share_history:
+            body["visibleHistoryStartDateTime"] = "0001-01-01T00:00:00Z"
         self._post(f"/chats/{chat_id}/members", body, SCOPES_CHAT)
 
     def remove_chat_member(self, chat_id: str, membership_id: str) -> None:

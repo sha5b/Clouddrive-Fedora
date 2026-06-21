@@ -21,13 +21,15 @@ import html
 import re
 from gettext import gettext as _
 
-from gi.repository import Adw, Gdk, GdkPixbuf, GLib, Gtk, Pango
+from gi.repository import Adw, Gdk, GLib, Gtk, Pango
 
 from ..modules.microsoft365.graph import _html_to_pango, _strip_html
 from .format import esc, relative_time
+from .imaging import thumbnail_texture
 from .source_nav import (
     SCOPE_HINT,
     action_row,
+    attachment_chip,
     clear_listbox,
     is_muted,
     is_pinned,
@@ -539,7 +541,7 @@ class TeamsView(Adw.Bin):
                     lambda u=att["url"]: self._client().fetch_bytes(u),
                     att.get("name") or "image", max_px=320))
             else:
-                box.append(self._attachment_chip(att))
+                box.append(attachment_chip(att, self._window))
 
         reactions = msg.get("reactions") or []
         if reactions:
@@ -578,23 +580,6 @@ class TeamsView(Adw.Bin):
         box.append(inner)
         return box
 
-    def _attachment_chip(self, att) -> Gtk.Widget:
-        """A flat icon+name chip for a non-image attachment — identical layout
-        to chat_view._attachment_chip. Only real http(s) links open in a
-        browser (hosted-content URLs need a token and can't open externally)."""
-        name = att.get("name", "") or _("Attachment")
-        url = att.get("url", "")
-        btn = Gtk.Button(halign=Gtk.Align.START)
-        btn.add_css_class("flat")
-        content = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        content.append(Gtk.Image.new_from_icon_name("mail-attachment-symbolic"))
-        content.append(Gtk.Label(label=name, ellipsize=Pango.EllipsizeMode.MIDDLE))
-        btn.set_child(content)
-        openable = bool(url) and url.startswith("http")
-        btn.set_sensitive(openable)
-        if openable:
-            btn.connect("clicked", lambda *_a: self._window.open_uri(url))
-        return btn
 
     def _lazy_image(self, fetch, name: str = "image", *, max_px: int = 320
                     ) -> Gtk.Widget:
@@ -614,7 +599,7 @@ class TeamsView(Adw.Bin):
                     placeholder.set_tooltip_text(str(error))
                 return False
             try:
-                texture = self._texture_from_bytes(data, max_px)
+                texture = thumbnail_texture(data, max_px)
             except Exception as exc:  # noqa: BLE001 - undecodable payload
                 placeholder.get_last_child().set_text(_("Image"))
                 placeholder.set_tooltip_text(str(exc))
@@ -640,32 +625,6 @@ class TeamsView(Adw.Bin):
 
         ImageWindow(self._window, data, name).present()
 
-    @staticmethod
-    def _texture_from_bytes(data: bytes, max_px: int):
-        """Decode image bytes into a Gdk.Texture, downscaled so its longest
-        side is at most ``max_px``.
-
-        Scaling happens *during* decode (the loader's ``size-prepared`` signal),
-        so a huge OneNote image is never fully decoded into memory first — this
-        keeps the GPU upload under the texture limit and stops an over-large page
-        image from crashing the renderer."""
-        loader = GdkPixbuf.PixbufLoader()
-
-        def _on_size(ldr, w, h):
-            if w <= 0 or h <= 0:
-                return
-            longest = max(w, h)
-            if longest > max_px:
-                scale = max_px / longest
-                ldr.set_size(max(1, int(w * scale)), max(1, int(h * scale)))
-
-        loader.connect("size-prepared", _on_size)
-        loader.write(data)
-        loader.close()
-        pb = loader.get_pixbuf()
-        if pb is None:
-            raise ValueError("undecodable image")
-        return Gdk.Texture.new_for_pixbuf(pb)
 
     def _send_post(self) -> None:
         text = self._post_entry.get_text().strip()

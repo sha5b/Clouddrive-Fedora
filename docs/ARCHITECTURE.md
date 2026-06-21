@@ -9,7 +9,7 @@ Cloudy is a GNOME-native (GTK4 / Libadwaita) Python application that
 **orchestrates** existing Linux backends rather than reimplementing sync or mail
 protocols. It is modeled on [Alpaca](https://github.com/Jeffser/Alpaca): pure
 Python (PyGObject), Meson build, Blueprint UI compiled into a GResource, packaged
-as a Flatpak on the GNOME runtime, with a clean "instance manager + provider
+as a Flatpak on the GNOME runtime, with an "instance manager + provider
 class" module pattern.
 
 ## High-level picture
@@ -34,7 +34,7 @@ class" module pattern.
 ```
 
 **Why the split?** FUSE mounts and host Nautilus extensions do not work cleanly
-from inside a Flatpak sandbox. The pragmatic, validated design runs the
+from inside a Flatpak sandbox. The design runs the
 sync/mount daemons and the Nautilus extension **on the host** (as user systemd
 services / host extensions) and has the sandboxed UI talk to them over **D-Bus**.
 

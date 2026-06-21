@@ -12,7 +12,9 @@ from __future__ import annotations
 
 from gettext import gettext as _
 
-from gi.repository import Adw, Gdk, GdkPixbuf, Gio, GLib, Gtk
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk
+
+from .imaging import thumbnail_texture
 
 _MAX_EDGE = 2200  # cap the decoded texture so huge images stay light to render
 _ZOOM_STEP = 1.25
@@ -59,7 +61,7 @@ class ImageWindow(Adw.Window):
         self._pic = Gtk.Picture(hexpand=True, vexpand=True)
         self._pic.set_content_fit(Gtk.ContentFit.CONTAIN)
         try:
-            tex = self._texture(data)
+            tex = thumbnail_texture(data, _MAX_EDGE)
             self._nat_w, self._nat_h = tex.get_width(), tex.get_height()
             self._pic.set_paintable(tex)
         except Exception:  # noqa: BLE001 - undecodable payload → empty viewer
@@ -130,19 +132,6 @@ class ImageWindow(Adw.Window):
     def _on_drag_update(self, _g, offx, offy) -> None:
         self._scroller.get_hadjustment().set_value(self._h0 - offx)
         self._scroller.get_vadjustment().set_value(self._v0 - offy)
-
-    @staticmethod
-    def _texture(data: bytes):
-        loader = GdkPixbuf.PixbufLoader()
-        loader.write(data)
-        loader.close()
-        pix = loader.get_pixbuf()
-        w, h = pix.get_width(), pix.get_height()
-        scale = min(1.0, _MAX_EDGE / w, _MAX_EDGE / h)
-        if scale < 1.0:
-            pix = pix.scale_simple(max(1, int(w * scale)), max(1, int(h * scale)),
-                                   GdkPixbuf.InterpType.BILINEAR)
-        return Gdk.Texture.new_for_pixbuf(pix)
 
     # -- download ---------------------------------------------------------
     def _save(self) -> None:

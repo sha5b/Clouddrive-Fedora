@@ -41,6 +41,20 @@ def sender_name(value: str) -> str:
     return value
 
 
+def sender_email(value: str) -> str:
+    """Pull the bare address out of an RFC 5322 'From'/'To' entry.
+
+    'Ray Smith <ray@x.com>'      -> 'ray@x.com'
+    'ray@x.com'                  -> 'ray@x.com'
+    'Ray Smith'                  -> ''      (no address present)
+    """
+    value = (value or "").strip()
+    m = _ANGLE_RE.match(value)
+    if m:
+        return m.group(2).strip()
+    return value if "@" in value else ""
+
+
 def short_time(iso: str) -> str:
     """'2026-06-14T09:30:00Z' -> '2026-06-14 09:30'."""
     if not iso or "T" not in iso:

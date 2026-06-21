@@ -21,9 +21,11 @@ from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
 
 
 from .format import esc, relative_time
+from .imaging import thumbnail_texture
 from .source_nav import (
     SCOPE_HINT,
     action_row,
+    attachment_chip,
     clear_listbox,
     is_muted,
     is_pinned,
@@ -610,19 +612,26 @@ class ChatView(Adw.Bin):
     def _on_presence(self, result, error) -> bool:
         if error or not result:
             return False
-        # Merge, but never DOWNGRADE a known availability to a blank/unknown one.
-        # Graph returns presence from two paths — the chat-list batch
+        # Merge, but never DOWNGRADE a known availability to a genuinely UNKNOWN
+        # one. Graph returns presence from two paths — the chat-list batch
         # (``_refresh_presence``) and the per-chat member fetch (``_on_members``,
         # fired ~1s after a chat opens) — and the second often comes back
         # "PresenceUnknown"/"" for someone the first already resolved. Letting
         # that overwrite the good value made a dot that just appeared vanish a
         # second later. Keep the better, previously-known value instead.
+        #
+        # "Offline" is NOT in that guard set: it's an *authoritative* answer from
+        # Graph (the person really is offline), not a transient blank. Guarding it
+        # like "" / "PresenceUnknown" meant someone who went Available → Offline
+        # kept a stale green dot forever, since the 60s refresh could never write
+        # the downgrade. Only "" and "PresenceUnknown" mean "we don't know".
+        UNKNOWN = ("", "PresenceUnknown")
         merged = dict(self._presence)
         for uid, info in result.items():
             avail = (info or {}).get("availability", "")
-            if avail in ("", "PresenceUnknown", "Offline") and uid in merged:
+            if avail in UNKNOWN and uid in merged:
                 known = (merged[uid] or {}).get("availability", "")
-                if known not in ("", "PresenceUnknown", "Offline"):
+                if known not in UNKNOWN:
                     continue  # don't clobber a real status with a transient blank
             merged[uid] = info
         changed = merged != self._presence
@@ -1575,7 +1584,7 @@ class ChatView(Adw.Bin):
             elif is_image and att.get("url"):
                 images.append(self._image_widget(att))
             else:
-                others.append(self._attachment_chip(att))
+                others.append(attachment_chip(att, self._window))
         if len(images) == 1:
             bubble.append(images[0])
         elif images:
@@ -1767,53 +1776,7 @@ class ChatView(Adw.Bin):
         self._window.open_uri(uri)
         return True
 
-    def _attachment_chip(self, att) -> Gtk.Widget:
-        name = att.get("name", "") or _("Attachment")
-        url = att.get("url", "")
-        btn = Gtk.Button(halign=Gtk.Align.START)
-        btn.add_css_class("flat")
-        content = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        content.append(Gtk.Image.new_from_icon_name("mail-attachment-symbolic"))
-        content.append(Gtk.Label(label=name, ellipsize=Pango.EllipsizeMode.MIDDLE))
-        btn.set_child(content)
-        # Only real http(s) file links open in a browser; hosted-content URLs
-        # need an auth token and are shown inline instead (see _image_widget).
-        openable = bool(url) and url.startswith("http")
-        btn.set_sensitive(openable)
-        if openable:
-            btn.connect("clicked", lambda *_a: self._window.open_uri(url))
-        return btn
-
     _THUMB_MAX = 240  # longest edge of an inline image thumbnail (px)
-
-    @staticmethod
-    def _thumb_texture(data: bytes, max_edge: int):
-        """Decode image bytes and downscale to ``max_edge`` (longest side),
-        returning a small Gdk.Texture so the widget's natural size stays tiny.
-
-        Scaling happens *during* decode (via the loader's ``size-prepared``
-        signal), so a huge source image is never fully decoded into memory — this
-        keeps the GPU upload well under the texture limit and stops a very large
-        image (a OneNote scan, a high-res screenshot) from OOM-ing or crashing
-        the renderer."""
-        from gi.repository import GdkPixbuf
-
-        loader = GdkPixbuf.PixbufLoader()
-
-        def _on_size(ldr, w, h):
-            if w <= 0 or h <= 0:
-                return
-            scale = min(1.0, max_edge / w, max_edge / h)
-            if scale < 1.0:
-                ldr.set_size(max(1, int(w * scale)), max(1, int(h * scale)))
-
-        loader.connect("size-prepared", _on_size)
-        loader.write(data)
-        loader.close()
-        pix = loader.get_pixbuf()
-        if pix is None:
-            raise ValueError("undecodable image")
-        return Gdk.Texture.new_for_pixbuf(pix)
 
     @staticmethod
     def _image_for_send(data: bytes, max_edge: int = 1280) -> tuple:
@@ -1883,7 +1846,7 @@ class ChatView(Adw.Bin):
                 placeholder.set_tooltip_text(str(error) if error else None)
                 return False
             try:
-                texture = self._thumb_texture(data, self._THUMB_MAX)
+                texture = thumbnail_texture(data, self._THUMB_MAX)
             except Exception as exc:  # noqa: BLE001 - undecodable payload → keep label
                 placeholder.get_last_child().set_text(_("Image"))
                 placeholder.set_tooltip_text(str(exc))
@@ -1911,7 +1874,7 @@ class ChatView(Adw.Bin):
         Send."""
         data = att.get("data")
         try:
-            texture = self._thumb_texture(data, self._THUMB_MAX)
+            texture = thumbnail_texture(data, self._THUMB_MAX)
         except Exception:  # noqa: BLE001 - undecodable → skip the thumbnail
             return None
         return self._picture_for(texture, data, att.get("name") or "image")
@@ -2083,7 +2046,7 @@ class ChatView(Adw.Bin):
         paintable, not just set_size_request)."""
         thumb = Gtk.Overlay(valign=Gtk.Align.CENTER)
         try:
-            preview = self._thumb_texture(data, 64)
+            preview = thumbnail_texture(data, 64)
         except Exception:  # noqa: BLE001 - not a decodable image
             self._window.add_toast(_("That file isn't a supported image."))
             return

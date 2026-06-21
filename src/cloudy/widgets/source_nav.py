@@ -14,7 +14,7 @@ import threading
 from gettext import gettext as _
 from typing import Callable
 
-from gi.repository import Adw, GLib, Gtk
+from gi.repository import Adw, GLib, Gtk, Pango
 
 from .metrics import ICON_LG, SPACE_L, SPACE_M
 
@@ -98,6 +98,25 @@ def loading_box(text: str | None = None) -> Gtk.Widget:
         label.add_css_class("dim-label")
         box.append(label)
     return box
+
+
+def attachment_chip(att: dict, window) -> Gtk.Widget:
+    """A flat icon+name chip for a non-image attachment (chat & teams). Only
+    real http(s) file links open in a browser; hosted-content URLs need an auth
+    token and are shown inline instead, so their chips render disabled."""
+    name = att.get("name", "") or _("Attachment")
+    url = att.get("url", "")
+    btn = Gtk.Button(halign=Gtk.Align.START)
+    btn.add_css_class("flat")
+    content = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+    content.append(Gtk.Image.new_from_icon_name("mail-attachment-symbolic"))
+    content.append(Gtk.Label(label=name, ellipsize=Pango.EllipsizeMode.MIDDLE))
+    btn.set_child(content)
+    openable = bool(url) and url.startswith("http")
+    btn.set_sensitive(openable)
+    if openable:
+        btn.connect("clicked", lambda *_a: window.open_uri(url))
+    return btn
 
 
 def action_row(text: str, button_label: str, on_click: Callable[[], None]

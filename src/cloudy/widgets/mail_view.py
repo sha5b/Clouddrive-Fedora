@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 from gettext import gettext as _
 
-from gi.repository import Adw, Gdk, GLib, Gtk, Pango
+from gi.repository import Adw, Gdk, Gtk, Pango
 
 from .format import esc, sender_name, short_time
 from .source_nav import (
@@ -99,6 +99,12 @@ class MailView(Adw.Bin):
         keys = Gtk.EventControllerKey()
         keys.connect("key-pressed", self._on_list_key)
         self._list.add_controller(keys)
+        # Double-click a message → pop it out into its own window (like a new
+        # mail), so it can be read alongside the list. A passive observer (no
+        # state claim) so single-click selection/activation is unaffected.
+        dbl = Gtk.GestureClick(button=Gdk.BUTTON_PRIMARY)
+        dbl.connect("pressed", self._on_list_double)
+        self._list.add_controller(dbl)
         list_scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER,
                                          vexpand=True)
         list_scroll.set_child(self._list)
@@ -725,6 +731,22 @@ class MailView(Adw.Bin):
         if mid is not None:
             self.open_message(mid)  # guarded; a re-click just reveals the reader
 
+    def _on_list_double(self, _gesture, n_press, _x, y) -> None:
+        if n_press != 2:
+            return
+        row = self._list.get_row_at_y(int(y))
+        if row is None or getattr(row, "_more", False):
+            return
+        mid = getattr(row, "_mid", None)
+        if mid is not None:
+            self.open_message_window(mid)
+
+    def open_message_window(self, mid) -> None:
+        """Pop a message out into its own read-only top-level window."""
+        from .message_window import MessageWindow
+
+        MessageWindow(self._window, self._account, mid).present()
+
     def _on_selection_changed(self, _list) -> None:
         # Open in the reader when exactly one message is selected; a multi-row
         # selection (Shift/Ctrl) keeps the current reader for batch actions.
@@ -888,59 +910,10 @@ class MailView(Adw.Bin):
 
     # -- attachments ------------------------------------------------------
     def _open_attachment(self, att) -> None:
-        """Fetch an attachment's bytes, then open images in a viewer window and
-        offer to save everything else."""
-        mid = self._open_mid
-        if not mid or not att.get("id"):
-            return
-        name = att.get("name") or _("attachment")
-        self._window.add_toast(_("Opening %s…") % name)
+        from .attachments import open_attachment
 
-        def work():
-            from .clients import build_account_client
-
-            client = build_account_client(self._window.get_application(), self._account)
-            return client.fetch_mail_attachment(mid, att["id"])
-
-        run_async(work, lambda data, err: self._on_attachment(att, data, err))
-
-    def _on_attachment(self, att, data, error) -> bool:
-        if error or not data:
-            self._window.add_toast(_("Couldn't open attachment: %s")
-                                   % (error or _("no data")))
-            return False
-        name = att.get("name") or _("attachment")
-        if (att.get("content_type") or "").lower().startswith("image"):
-            from .media_window import ImageWindow
-
-            ImageWindow(self._window, data, name).present()
-        else:
-            self._save_attachment(data, name)
-        return False
-
-    def _save_attachment(self, data, name) -> None:
-        from .source_nav import local_initial_folder
-
-        dialog = Gtk.FileDialog(title=_("Save"), initial_name=name)
-        folder = local_initial_folder()
-        if folder is not None:
-            dialog.set_initial_folder(folder)
-        dialog.save(self._window, None, lambda d, r: self._on_save_attachment(d, r, data))
-
-    def _on_save_attachment(self, dialog, result, data) -> None:
-        try:
-            gfile = dialog.save_finish(result)
-        except GLib.Error:
-            return
-        if gfile is None:
-            return
-        try:
-            from gi.repository import Gio
-
-            gfile.replace_contents(data, None, False, Gio.FileCreateFlags.NONE, None)
-            self._window.add_toast(_("Saved"))
-        except GLib.Error as exc:
-            self._window.add_toast(_("Couldn't save: %s") % exc.message)
+        open_attachment(self._window, self._account, self._open_mid, att,
+                        self._window.add_toast)
 
     # -- compose / reply --------------------------------------------------
     def _send_context(self):

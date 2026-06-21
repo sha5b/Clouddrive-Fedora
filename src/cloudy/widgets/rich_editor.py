@@ -22,6 +22,8 @@ from gettext import gettext as _
 
 from gi.repository import Gdk, Gio, GLib, Gtk, Pango
 
+from .imaging import thumbnail_texture
+
 # Inline character marks: tag name -> (property, value) applied to the tag.
 _MARKS = {
     "bold": ("weight", Pango.Weight.BOLD),
@@ -404,7 +406,7 @@ class RichTextEditor(Gtk.Box):
     def insert_image(self, data: bytes, content_type: str) -> None:
         """Insert ``data`` as an inline image at the cursor."""
         try:
-            texture = self._thumb_texture(data, 360)
+            texture = thumbnail_texture(data, 360)
         except Exception:  # noqa: BLE001 - undecodable payload
             return
         insert = self._buffer.get_iter_at_mark(self._buffer.get_insert())
@@ -419,21 +421,6 @@ class RichTextEditor(Gtk.Box):
         picture.set_size_request(texture.get_width(), texture.get_height())
         picture.add_css_class("cloudy-bubble-image")
         self._view.add_child_at_anchor(picture, anchor)
-
-    @staticmethod
-    def _thumb_texture(data: bytes, max_edge: int):
-        from gi.repository import GdkPixbuf
-
-        loader = GdkPixbuf.PixbufLoader()
-        loader.write(data)
-        loader.close()
-        pix = loader.get_pixbuf()
-        w, h = pix.get_width(), pix.get_height()
-        scale = min(1.0, max_edge / w, max_edge / h)
-        if scale < 1.0:
-            pix = pix.scale_simple(max(1, int(w * scale)), max(1, int(h * scale)),
-                                   GdkPixbuf.InterpType.BILINEAR)
-        return Gdk.Texture.new_for_pixbuf(pix)
 
     # -- clear ------------------------------------------------------------
     def _on_clear(self, _btn) -> None:

@@ -237,6 +237,8 @@ class GoogleClient:
             "subject": html.unescape(headers.get("subject", "(no subject)")),
             "from": html.unescape(headers.get("from", "")),
             "to": html.unescape(headers.get("to", "")),
+            "cc": html.unescape(headers.get("cc", "")),
+            "bcc": html.unescape(headers.get("bcc", "")),
             "received": received,
             "body": content,
             "body_html": is_html,

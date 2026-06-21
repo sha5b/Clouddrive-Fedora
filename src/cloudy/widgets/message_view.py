@@ -16,7 +16,7 @@ from gettext import gettext as _
 
 from gi.repository import Adw, Gtk, Pango
 
-from .format import sender_name, short_time
+from .format import esc, sender_email, sender_name, short_time
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _STYLE_RE = re.compile(r"<(script|style|head)[^>]*>.*?</\1>", re.DOTALL | re.IGNORECASE)
@@ -282,6 +282,46 @@ def _attachments_bar(attachments, on_open) -> Gtk.Widget:
     return flow
 
 
+def _copy_to_clipboard(widget: Gtk.Widget, text: str) -> None:
+    """Copy ``text`` and, if a toast overlay is in the ancestry, confirm it.
+
+    Both reader hosts (the mail pane and the pop-out window) wrap their content
+    in an ``Adw.ToastOverlay``; walk up to whichever one we're inside."""
+    widget.get_clipboard().set(text)
+    node = widget.get_parent()
+    while node is not None and not isinstance(node, Adw.ToastOverlay):
+        node = node.get_parent()
+    if node is not None:
+        node.add_toast(Adw.Toast(title=_("Copied %s") % text, timeout=2))
+
+
+def _on_address_link(label: Gtk.Label, uri: str) -> bool:
+    # Our address links use a private "copy:<addr>" scheme so clicking copies
+    # instead of trying to launch a handler. Returning True suppresses the
+    # default (open-URI) behaviour.
+    if uri.startswith("copy:"):
+        _copy_to_clipboard(label, uri[len("copy:"):])
+    return True
+
+
+def _address_row(prefix: str, value: str) -> Gtk.Widget | None:
+    """A dim "Prefix:" line whose addresses are each a click-to-copy link.
+
+    Rendered as a single wrapping markup label so many recipients flow onto
+    multiple lines naturally."""
+    addrs = [a.strip() for a in (value or "").split(",") if a.strip()]
+    if not addrs:
+        return None
+    links = ", ".join(f'<a href="copy:{esc(a)}">{esc(a)}</a>' for a in addrs)
+    row = Gtk.Label(xalign=0, wrap=True, use_markup=True)
+    row.set_markup(f"{esc(prefix)} {links}")
+    row.add_css_class("dim-label")
+    row.add_css_class("caption")
+    row.set_tooltip_text(_("Click an address to copy it"))
+    row.connect("activate-link", _on_address_link)
+    return row
+
+
 # -- public builders -----------------------------------------------------
 def build_message_content(msg: dict, on_open_attachment=None, on_rsvp=None) -> Gtk.Widget:
     """Reader content: a fixed header (subject/sender/date) + the body view.
@@ -316,11 +356,16 @@ def build_message_content(msg: dict, on_open_attachment=None, on_rsvp=None) -> G
             line.append(when)
         header.append(line)
 
-    if msg.get("to"):
-        to = Gtk.Label(label=_("To: %s") % msg["to"], xalign=0, wrap=True)
-        to.add_css_class("dim-label")
-        to.add_css_class("caption")
-        header.append(to)
+    # From / To / Cc / Bcc — each address spelled out in full and individually
+    # clickable to copy it to the clipboard. From mirrors the recipient rows;
+    # Bcc is normally only present on mail you sent.
+    for prefix, value in ((_("From:"), sender_email(msg.get("from", ""))),
+                          (_("To:"), msg.get("to")),
+                          (_("Cc:"), msg.get("cc")),
+                          (_("Bcc:"), msg.get("bcc"))):
+        row = _address_row(prefix, value)
+        if row is not None:
+            header.append(row)
 
     invite = msg.get("invite")
     if invite and on_rsvp is not None:

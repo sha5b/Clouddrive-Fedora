@@ -243,9 +243,10 @@ class DashboardView(Adw.Bin):
                     "files": files, "mounted": self._count_mounted(accounts)}
 
         def done(res, _error):
-            if res:
-                app.cache.set(self._CACHE_KEY, res)
-                self._on_loaded(res)
+            if not res or self.get_root() is None:  # navigated away mid-fetch
+                return
+            app.cache.set(self._CACHE_KEY, res)
+            self._on_loaded(res)
 
         run_async(work, done)
 
