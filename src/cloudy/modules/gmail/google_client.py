@@ -20,6 +20,7 @@ import json
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Callable, Sequence
@@ -174,13 +175,17 @@ class GoogleClient:
         return self.list_messages_page(folder_id, limit=limit)[0]
 
     def list_messages_page(self, folder_id: str = "INBOX", *, limit: int = 15,
-                           page_token: str | None = None):
+                           page_token: str | None = None, query: str = ""):
         """Like :meth:`list_messages` but returns ``(messages, next_token)``.
 
         ``next_token`` is Gmail's ``nextPageToken`` or ``None``; pass it back as
-        ``page_token`` to fetch the following page of older messages."""
+        ``page_token`` to fetch the following page of older messages. When
+        ``query`` is set it is passed as Gmail's ``q=`` (full Gmail search
+        syntax), still scoped to ``folder_id`` via ``labelIds``."""
         url = (f"{GMAIL}/users/me/messages"
                f"?labelIds={folder_id}&maxResults={limit}")
+        if query:
+            url += f"&q={urllib.parse.quote(query)}"
         if page_token:
             url += f"&pageToken={urllib.parse.quote(page_token)}"
         listing = self._get(url, SCOPES_MAIL)
@@ -350,10 +355,15 @@ class GoogleClient:
     def reply_mail(self, message_id: str, body: str, *, reply_all: bool = False,
                    html: bool = False, attachments=None,
                    read_receipt: bool = False) -> None:
-        """Reply on the original thread (To = original sender, subject ``Re: …``)."""
+        """Reply on the original thread (subject ``Re: …``). A plain reply goes to
+        the original sender; ``reply_all`` also carries the original To recipients
+        and Cc (minus your own address), like Outlook/Gmail's Reply all."""
+        from email.utils import formataddr, getaddresses
+
         meta = self._get(
             f"{GMAIL}/users/me/messages/{message_id}"
-            f"?format=metadata&metadataHeaders=From&metadataHeaders=Subject"
+            f"?format=metadata&metadataHeaders=From&metadataHeaders=To"
+            f"&metadataHeaders=Cc&metadataHeaders=Subject"
             f"&metadataHeaders=Message-ID&metadataHeaders=References",
             SCOPES_MAIL,
         )
@@ -364,12 +374,36 @@ class GoogleClient:
             subject = f"Re: {subject}"
         msg_id = hdrs.get("message-id", "")
         references = " ".join(x for x in (hdrs.get("references", ""), msg_id) if x)
+
+        # Build recipients, deduping and dropping our own address so reply-all
+        # doesn't loop back to us. To = sender (+ original To on reply-all);
+        # Cc = original Cc on reply-all.
+        seen = {self._my_address()}
+        to, cc = [], []
+        for bucket, header in ((to, "from"),
+                               *(((to, "to"), (cc, "cc")) if reply_all else ())):
+            for name, addr in getaddresses([hdrs.get(header, "")]):
+                if addr and addr.lower() not in seen:
+                    seen.add(addr.lower())
+                    bucket.append(formataddr((name, addr)))
+
         raw = self._raw_message(
-            [hdrs.get("from", "")], subject, body, html=html, attachments=attachments,
+            to, subject, body, cc=cc or None, html=html, attachments=attachments,
             headers={"In-Reply-To": msg_id, "References": references},
         )
         self._post(f"{GMAIL}/users/me/messages/send",
                    {"raw": raw, "threadId": meta.get("threadId", "")}, SCOPES_MAIL)
+
+    def _my_address(self) -> str:
+        """The signed-in user's own email (cached) — used to exclude self from
+        reply-all recipients. Empty string if the profile can't be fetched."""
+        if not hasattr(self, "_email"):
+            try:
+                self._email = (self._get(f"{GMAIL}/users/me/profile", SCOPES_MAIL)
+                               .get("emailAddress", "") or "").lower()
+            except GoogleError:
+                self._email = ""
+        return self._email
 
     # -- Contacts ---------------------------------------------------------
     def list_contacts(self, *, limit: int = 1000) -> list[dict]:
@@ -521,16 +555,20 @@ class GoogleClient:
             "location": e.get("location", ""),
             "all_day": "date" in start,
             "response": response,
+            "online_url": e.get("hangoutLink", ""),
         }
 
     def create_event(self, *, subject: str, start_iso: str, end_iso: str,
                      location: str = "", body: str = "", attendees=None,
                      all_day: bool = False, source: str = "me",
-                     address: str | None = None, html: bool = False) -> dict:
+                     address: str | None = None, html: bool = False,
+                     online: bool = False) -> dict:
         """Create an event on the primary calendar (needs calendar.events).
 
         All-day events use a ``date`` (the calendar day from the ISO string);
-        timed events use the full ``dateTime``."""
+        timed events use the full ``dateTime``. ``online=True`` requests a Google
+        Meet link — Google fills ``hangoutLink`` (and ``conferenceData``) on the
+        returned event (``conferenceDataVersion=1`` is required for that)."""
         def slot(iso: str) -> dict:
             return {"date": iso[:10]} if all_day else {"dateTime": iso}
 
@@ -541,8 +579,13 @@ class GoogleClient:
             event["description"] = body
         if attendees:
             event["attendees"] = [{"email": a} for a in attendees if a]
-        return self._post(
-            f"{CALENDAR}/calendars/primary/events", event, SCOPES_CALENDAR)
+        url = f"{CALENDAR}/calendars/primary/events"
+        if online:
+            event["conferenceData"] = {"createRequest": {
+                "requestId": uuid.uuid4().hex,
+                "conferenceSolutionKey": {"type": "hangoutsMeet"}}}
+            url += "?conferenceDataVersion=1"
+        return self._post(url, event, SCOPES_CALENDAR)
 
     def update_event(self, event_id: str, *, subject: str, start_iso: str,
                      end_iso: str, location: str = "", body: str = "",

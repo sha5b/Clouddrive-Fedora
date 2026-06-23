@@ -16,7 +16,9 @@ from gettext import gettext as _
 from gi.repository import Adw, Gtk
 
 from ..modules.microsoft365.graph import Drive
-from ..modules.microsoft365.mounts import MountManager, mount_base_for
+from ..modules.microsoft365.mounts import (
+    MountManager, forget_mount, mount_base_for, record_mount,
+)
 from .file_browser import FileBrowserPane
 from .source_nav import clear_listbox, is_scope_error, message_row, run_async
 
@@ -62,6 +64,9 @@ class FilesView(Adw.Bin):
 
         self._set_message(_("Loading libraries…"))
         self._load_libraries()
+        # Returning to the Files tab re-checks mount state, so drives the startup
+        # restore or health watchdog reconnected show as Mounted without a reload.
+        self.connect("map", lambda *_: self.refresh_mount_states())
 
     # -- list helpers -----------------------------------------------------
     def _set_message(self, text: str) -> None:
@@ -226,6 +231,14 @@ class FilesView(Adw.Bin):
         row.add_suffix(button)
         entry[1] = button
 
+    def refresh_mount_states(self) -> None:
+        """Re-evaluate every row's Mount/Unmount state against the live mount
+        table. Cheap (one mount-table read per drive), so it's safe to run when
+        the view is shown — picks up mounts the startup restore / health
+        watchdog reconnected while the user was elsewhere."""
+        for lib in self._libraries:
+            self._apply_button(lib)
+
     # -- selection --------------------------------------------------------
     def _on_row_activated(self, _list, row) -> None:
         lib = getattr(row, "_lib", None)
@@ -261,24 +274,8 @@ class FilesView(Adw.Bin):
             if not tok:
                 tok = self._mounts.authorize(backend)
                 secrets.store(self._account.id, token_kind, tok)
-            remote = self._mounts._safe_name(drive.name)
-            if google:
-                opts = {"token": tok, "scope": "drive"}
-                # "Shared with me" and Shared Drives are the same backend with a
-                # different view selector (rclone drive config keys).
-                if drive.kind == "google_shared_with_me":
-                    opts["shared_with_me"] = "true"
-                elif drive.kind == "google_shared_drive" and drive.id:
-                    opts["team_drive"] = drive.id
-            else:
-                opts = {
-                    "token": tok,
-                    "drive_id": drive.id,
-                    "drive_type": self._mounts.drive_type_for(drive.kind),
-                }
-            self._mounts.create_remote(remote, backend, opts)
-            return self._mounts.mount(name=drive.name, remote=remote,
-                                      drive_id=drive.id, base=base)
+            return self._mounts.mount_drive(
+                provider=self._account.provider, drive=drive, token=tok, base=base)
 
         run_async(work, lambda info, error: self._on_mounted(lib, info, error))
 
@@ -286,6 +283,8 @@ class FilesView(Adw.Bin):
         if error:
             self._window.add_toast(_("Mount failed: %s") % error)
             return False
+        # Remember it so it remounts automatically on the next startup.
+        record_mount(self._account.id, lib["drive"])
         self._apply_button(lib)
         self._window.add_toast(_("%s is ready.") % lib["drive"].name)
         # Open it straight away for a one-click feel.
@@ -306,6 +305,8 @@ class FilesView(Adw.Bin):
         if error:
             self._window.add_toast(_("Unmount failed: %s") % error)
             return False
+        # Forget it so it stays unmounted on the next startup.
+        forget_mount(self._account.id, lib["drive"].name)
         self._apply_button(lib)
         if self._open_name == lib["drive"].name:
             self._open_name = None

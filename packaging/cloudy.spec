@@ -13,7 +13,7 @@
 %global appid io.github.sha5b.Cloudy
 
 Name:           cloudy
-Version:        0.2.5
+Version:        0.2.6
 Release:        1%{?dist}
 Summary:        Use OneDrive, SharePoint and unified mail on your desktop
 
@@ -115,6 +115,13 @@ meson test -C %{_vpath_builddir} --print-errorlogs
 %{_datadir}/%{name}/
 
 %changelog
+* Mon Jun 22 2026 Shahab Nedaei <ned.tabulov@gmail.com> - 0.2.6-1
+- Mounted drives auto-remount at startup and reconnect if their daemon dies
+  (health watchdog).
+- Mail: server-side mailbox search (press Enter) alongside the instant filter.
+- File browser: multi-select with Copy to.../Move to.../Trash, and an
+  in-folder name filter.
+
 * Sun Jun 21 2026 Shahab Nedaei <ned.tabulov@gmail.com> - 0.2.5-1
 - Mail headers now show the sender's full address plus To/Cc/Bcc recipients,
   with every address a click-to-copy link.

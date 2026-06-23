@@ -66,14 +66,14 @@ def _b64url(data: bytes) -> str:
 
 
 class _CodeHandler(http.server.BaseHTTPRequestHandler):
-    code = None
-    error = None
-
     def do_GET(self):  # noqa: N802 - http.server API
+        # Record the redirect's params on the *server instance*, not the class,
+        # so two concurrent sign-ins can't cross-contaminate each other's code.
         query = urllib.parse.urlparse(self.path).query
         params = urllib.parse.parse_qs(query)
-        _CodeHandler.code = params.get("code", [None])[0]
-        _CodeHandler.error = params.get("error", [None])[0]
+        self.server.auth_code = params.get("code", [None])[0]
+        self.server.auth_error = params.get("error", [None])[0]
+        self.server.auth_state = params.get("state", [None])[0]
         self.send_response(200)
         self.send_header("Content-Type", "text/html")
         self.end_headers()
@@ -113,18 +113,22 @@ class GoogleAuth:
                                   + SCOPES_CONTACTS + SCOPES_CHAT))
         verifier = _b64url(_secrets.token_bytes(48))
         challenge = _b64url(hashlib.sha256(verifier.encode()).digest())
+        state = _b64url(_secrets.token_bytes(24))  # CSRF / auth-code-injection guard
 
-        _CodeHandler.code = None
-        _CodeHandler.error = None
         server = http.server.HTTPServer(("127.0.0.1", 0), _CodeHandler)
+        server.auth_code = server.auth_error = server.auth_state = None
         port = server.server_address[1]
-        redirect_uri = f"http://localhost:{port}/"
+        # Bind and redirect on the SAME literal (127.0.0.1) — Google treats
+        # 127.0.0.1 and localhost as distinct, and localhost can resolve to IPv6
+        # ::1 (where we don't listen), which hangs the redirect.
+        redirect_uri = f"http://127.0.0.1:{port}/"
 
         params = {
             "client_id": self._client_id,
             "redirect_uri": redirect_uri,
             "response_type": "code",
             "scope": " ".join(scopes),
+            "state": state,
             "code_challenge": challenge,
             "code_challenge_method": "S256",
             "access_type": "offline",
@@ -144,15 +148,17 @@ class GoogleAuth:
         threading.Thread(target=server.handle_request, daemon=True).start()
         # Wait (bounded) for the redirect to arrive.
         for _ in range(600):  # up to ~120s
-            if _CodeHandler.code or _CodeHandler.error:
+            if server.auth_code or server.auth_error:
                 break
             time.sleep(0.2)
         server.server_close()
 
-        if _CodeHandler.error or not _CodeHandler.code:
-            raise AuthError(_CodeHandler.error or "no authorization code received")
+        if server.auth_error or not server.auth_code:
+            raise AuthError(server.auth_error or "no authorization code received")
+        if server.auth_state != state:
+            raise AuthError("state mismatch — sign-in aborted (possible CSRF)")
 
-        token = self._exchange_code(_CodeHandler.code, verifier, redirect_uri)
+        token = self._exchange_code(server.auth_code, verifier, redirect_uri)
         self._token = token
         self._store()
         return token

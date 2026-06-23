@@ -11,7 +11,15 @@ external, forwarded), not just ones that round-trip through a calendar API.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
+
+# A conferencing link buried in a free-text DESCRIPTION (Teams/Meet/Zoom/Webex),
+# used as a fallback when no machine-readable URL property is present.
+_JOIN_RE = re.compile(
+    r"https?://[^\s>\"]*(?:teams\.microsoft\.com/l/meetup-join|teams\.live\.com/meet"
+    r"|meet\.google\.com|zoom\.us/j/|\.zoom\.us/j/|webex\.com)[^\s>\"]*",
+    re.IGNORECASE)
 
 # RSVP action → (iCalendar PARTSTAT, email subject prefix). Action names match
 # the calendar RSVP vocabulary (graph/event_view) so one set of buttons drives
@@ -53,11 +61,13 @@ def _mailto(value: str) -> str:
 def parse_invite(text: str) -> dict | None:
     """Parse a VCALENDAR string. Returns the invite dict when it carries a
     VEVENT (with ``method``, ``uid``, ``sequence``, ``summary``, ``location``,
-    ``dtstart``/``dtend``, ``organizer_email``/``organizer_cn`` and
-    ``attendees`` = ``[{email, cn, partstat}]``), else ``None``."""
+    ``dtstart``/``dtend``, ``all_day``, ``status``, ``join_url``, ``description``,
+    ``organizer_email``/``organizer_cn`` and ``attendees`` =
+    ``[{email, cn, partstat}]``), else ``None``."""
     method = ""
     in_event = False
-    ev: dict = {"sequence": 0, "attendees": []}
+    ev: dict = {"sequence": 0, "attendees": [], "all_day": False,
+                "status": "", "join_url": "", "description": ""}
     have_event = False
     for line in _unfold(text):
         name, params, value = _split(line)
@@ -78,10 +88,19 @@ def parse_invite(text: str) -> dict | None:
             ev["summary"] = value.replace("\\,", ",").replace("\\n", " ").strip()
         elif name == "LOCATION":
             ev["location"] = value.replace("\\,", ",").strip()
+        elif name == "STATUS":
+            ev["status"] = value.strip().upper()
         elif name == "DTSTART":
             ev["dtstart"] = value.strip()
+            ev["all_day"] = params.get("VALUE", "").upper() == "DATE"
         elif name == "DTEND":
             ev["dtend"] = value.strip()
+        elif name == "DESCRIPTION":
+            ev["description"] = value.replace("\\,", ",").replace("\\n", "\n").strip()
+        # Machine-readable conferencing links Microsoft/Google add to invites.
+        elif name in ("URL", "X-MICROSOFT-SKYPETEAMSMEETINGURL", "X-GOOGLE-CONFERENCE"):
+            if value.strip().lower().startswith("http") and not ev["join_url"]:
+                ev["join_url"] = value.strip()
         elif name == "ORGANIZER":
             ev["organizer_email"] = _mailto(value)
             ev["organizer_cn"] = params.get("CN", "")
@@ -97,6 +116,10 @@ def parse_invite(text: str) -> dict | None:
     ev.setdefault("uid", "")
     ev.setdefault("summary", "")
     ev.setdefault("organizer_email", "")
+    if not ev["join_url"]:  # fall back to a link in the free-text body/location
+        match = _JOIN_RE.search(f"{ev.get('location', '')}\n{ev['description']}")
+        if match:
+            ev["join_url"] = match.group(0)
     return ev
 
 

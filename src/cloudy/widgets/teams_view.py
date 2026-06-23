@@ -62,9 +62,17 @@ class TeamsView(Adw.Bin):
         self._section_id = ""
         self._page_id = ""
         self._notes_loaded_for = ""  # team id whose notebook is currently shown
+        # Live conversation poll: refetch the open channel's posts on a timer
+        # (only while the view is on screen) so new posts/replies appear without
+        # a manual refresh. _conv_sig fingerprints the rendered posts so a poll
+        # re-renders only on a real change (no scroll jump / lost reply text).
+        self._conv_poll_id = None
+        self._conv_sig = None
 
         self.set_child(self._build_layout())
         self._load_teams()
+        self.connect("map", self._on_map)
+        self.connect("unmap", self._on_unmap)
 
     # ------------------------------------------------------------------ #
     # Layout
@@ -400,6 +408,54 @@ class TeamsView(Adw.Bin):
             self._ensure_notes_loaded()
 
     # ------------------------------------------------------------------ #
+    # Live conversation poll (only while the view is on screen)
+    # ------------------------------------------------------------------ #
+    _CONV_POLL_SECONDS = 25
+
+    def _on_map(self, *_a) -> None:
+        if self._conv_poll_id is None:
+            self._conv_poll_id = GLib.timeout_add_seconds(
+                self._CONV_POLL_SECONDS, self._conv_poll)
+
+    def _on_unmap(self, *_a) -> None:
+        if self._conv_poll_id is not None:
+            GLib.source_remove(self._conv_poll_id)
+            self._conv_poll_id = None
+
+    def _conv_poll(self) -> bool:
+        # Only poll the channel the user is actually looking at.
+        if self._channel_id and \
+                self._inner_stack.get_visible_child_name() == "conversation":
+            team_id, channel_id = self._team_id, self._channel_id
+
+            def work():
+                return self._client().list_channel_messages(team_id, channel_id)
+
+            run_async(work,
+                      lambda res, err: self._on_conv_poll(channel_id, res, err))
+        return True  # keep the timer alive (removed on unmap)
+
+    def _on_conv_poll(self, channel_id, result, error) -> bool:
+        if error or result is None or channel_id != self._channel_id:
+            return False
+        self._cache.set(self._conv_key(), result)
+        if self._posts_signature(result) != self._conv_sig:
+            self._render_posts(result)  # only re-render on a real change
+        return False
+
+    @staticmethod
+    def _posts_signature(posts) -> tuple:
+        """A fingerprint of the posts (ids, timestamps, reply ids, reaction
+        totals) — changes exactly when something the reader would notice does."""
+        sig: list = []
+        for p in posts or []:
+            sig.append((p.get("id", ""), p.get("sent", ""),
+                        sum(r.get("count", 0) for r in (p.get("reactions") or []))))
+            for r in p.get("replies") or []:
+                sig.append((r.get("id", ""), r.get("sent", "")))
+        return tuple(sig)
+
+    # ------------------------------------------------------------------ #
     # Conversation (channel posts)
     # ------------------------------------------------------------------ #
     def _conv_key(self) -> str:
@@ -442,6 +498,7 @@ class TeamsView(Adw.Bin):
         return False
 
     def _render_posts(self, posts) -> None:
+        self._conv_sig = self._posts_signature(posts)
         self._clear_box(self._conv_box)
         title = Gtk.Label(label=esc(self._channel_name), xalign=0)
         title.add_css_class("title-2")

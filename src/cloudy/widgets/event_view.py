@@ -8,6 +8,7 @@ RSVP buttons for meeting invites, then the event description rendered as HTML.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from gettext import gettext as _
 
 from gi.repository import Adw, Gio, Gtk, Pango
@@ -107,6 +108,46 @@ def build_event_content(event: dict, *, on_rsvp=None) -> Gtk.Widget:
                                title=_("No description"))
         empty.set_vexpand(True)
         box.append(empty)
+    return box
+
+
+def build_invite_card(invite: dict, on_rsvp) -> Gtk.Widget:
+    """The meeting-invite panel shown in an invite email: a status heading
+    (new / updated / cancelled), the event when/where, a Join button, then the
+    Accept/Tentative/Decline bar. ``invite`` is the parsed iMIP dict from
+    ``core.ics`` (iCalendar date fields); ``on_rsvp(action)`` answers it."""
+    cancelled = invite.get("method") == "CANCEL" or invite.get("status") == "CANCELLED"
+    if cancelled:
+        heading, accent = _("Meeting cancelled"), "error"
+    elif invite.get("sequence"):
+        heading, accent = _("Updated invitation"), "warning"
+    else:
+        heading, accent = _("Meeting invitation"), None
+
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin_top=4)
+    head = Gtk.Label(label=heading, xalign=0)
+    head.add_css_class("heading")
+    if accent:
+        head.add_css_class(accent)
+    box.append(head)
+
+    when = _ical_when(invite.get("dtstart", ""), invite.get("dtend", ""),
+                      invite.get("all_day", False))
+    if when:
+        box.append(_meta_row("x-office-calendar-symbolic", when))
+    if invite.get("location"):
+        box.append(_meta_row("mark-location-symbolic", invite["location"]))
+
+    if not cancelled and invite.get("join_url"):
+        actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8, margin_top=4)
+        join = Gtk.Button(label=_("Join meeting"))
+        join.add_css_class("suggested-action")
+        join.connect("clicked", lambda *_a: _open_uri(invite["join_url"]))
+        actions.append(join)
+        box.append(actions)
+
+    if not cancelled:
+        box.append(build_rsvp_bar(invite.get("my_response"), on_rsvp))
     return box
 
 
@@ -225,3 +266,34 @@ def _format_when(start: str, end: str, all_day: bool) -> str:
     start_t = rest[:5]
     end_t = end.partition("T")[2][:5] if end and "T" in end else ""
     return f"{date} · {start_t}–{end_t}" if end_t else f"{date} · {start_t}"
+
+
+def _ical_dt(value: str) -> datetime | None:
+    """Parse a basic-format iCalendar date/date-time (``20260623`` or
+    ``20260623T140000[Z]``). A trailing ``Z`` is UTC; otherwise it's treated as
+    local (TZID params are stripped upstream, so the wall-clock time is shown)."""
+    txt = (value or "").strip()
+    try:
+        if "T" not in txt:
+            return datetime.strptime(txt, "%Y%m%d")
+        utc = txt.endswith("Z")
+        dt = datetime.strptime(txt.rstrip("Z"), "%Y%m%dT%H%M%S")
+    except ValueError:
+        return None
+    return dt.replace(tzinfo=timezone.utc).astimezone() if utc else dt
+
+
+def _ical_when(dtstart: str, dtend: str, all_day: bool) -> str:
+    """A 'when' line for an iMIP invite, in the same shape as ``_format_when``."""
+    start = _ical_dt(dtstart)
+    if start is None:
+        return ""
+    date = start.strftime("%Y-%m-%d")
+    if all_day:
+        return _("%s · All day") % date
+    end = _ical_dt(dtend)
+    start_t = start.strftime("%H:%M")
+    if end is None:
+        return f"{date} · {start_t}"
+    end_t = end.strftime("%H:%M")
+    return f"{date} · {start_t}–{end_t}"

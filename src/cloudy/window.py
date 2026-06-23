@@ -42,6 +42,7 @@ class CloudyWindow(Adw.ApplicationWindow):
         self._account_mail_view = None
         self._account_chat_view = None
         self._account_calendar_view = None
+        self._account_activity_view = None
         self._account_shown = None
         self._last_tab: dict = {}  # account id -> last-viewed tab name
         self._mail_folder_by_account: dict = {}  # account id -> last mail folder id
@@ -179,6 +180,24 @@ class CloudyWindow(Adw.ApplicationWindow):
         if view is not None and hasattr(view, "refresh_live"):
             view.refresh_live()
 
+    def refresh_account_activity(self, account_id: str) -> None:
+        """Reload the open Activity feed when the notifier sees new mail/chat, so
+        the feed updates on its own instead of only on a manual refresh."""
+        if self._account_shown != account_id:
+            return
+        view = self._account_activity_view
+        if view is not None and hasattr(view, "refresh_live"):
+            view.refresh_live()
+
+    def refresh_account_calendar(self, account_id: str) -> None:
+        """Reload the open calendar when the notifier sees a new upcoming event,
+        so newly added/changed events appear without a manual refresh."""
+        if self._account_shown != account_id:
+            return
+        view = self._account_calendar_view
+        if view is not None and hasattr(view, "refresh_live"):
+            view.refresh_live()
+
     # -- per-account mail folder memory (survives account switches) -------
     def remember_mail_folder(self, account_id: str, folder_id: str) -> None:
         self._mail_folder_by_account[account_id] = folder_id
@@ -239,11 +258,17 @@ class CloudyWindow(Adw.ApplicationWindow):
         self._account_mail_view = None
         self._account_chat_view = None
         self._account_calendar_view = None
+        self._account_activity_view = None
         self._account_shown = account.id
         for key in caps:
             label, icon = CAPABILITY_UI.get(key, (key, "application-x-addon-symbolic"))
             child = self._capability_placeholder(account, key, label)
-            if key == "mail":
+            if key == "activity":
+                from .widgets.activity_view import ActivityView
+
+                if isinstance(child, ActivityView):
+                    self._account_activity_view = child
+            elif key == "mail":
                 from .widgets.mail_view import MailView
 
                 if isinstance(child, MailView):
@@ -305,6 +330,7 @@ class CloudyWindow(Adw.ApplicationWindow):
         self._account_mail_view = None
         self._account_chat_view = None
         self._account_calendar_view = None
+        self._account_activity_view = None
         self._account_shown = account.id
         status = Adw.StatusPage(
             icon_name="action-unavailable-symbolic",

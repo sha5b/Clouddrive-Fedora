@@ -369,10 +369,9 @@ def build_message_content(msg: dict, on_open_attachment=None, on_rsvp=None) -> G
 
     invite = msg.get("invite")
     if invite and on_rsvp is not None:
-        from .event_view import build_rsvp_bar
+        from .event_view import build_invite_card
 
-        bar = build_rsvp_bar(invite.get("my_response"), on_rsvp,
-                             title=_("Meeting invitation"))
+        bar = build_invite_card(invite, on_rsvp)
         bar.set_margin_start(20)
         bar.set_margin_end(20)
         bar.set_margin_bottom(6)

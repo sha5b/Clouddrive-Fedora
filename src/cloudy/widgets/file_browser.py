@@ -20,7 +20,7 @@ from datetime import datetime
 from gettext import gettext as _
 from pathlib import Path
 
-from gi.repository import Adw, Gio, GLib, Gtk, Pango
+from gi.repository import Adw, Gio, GLib, GObject, Gtk, Pango
 
 from .format import esc
 from .source_nav import run_async
@@ -162,6 +162,7 @@ class FileBrowserPane(Adw.Bin):
         self._expanded: set[str] = set()   # folder paths expanded inline (list view)
         self._child_cache: dict[str, list] = {}
         self._toggle_src = None            # pending single-click expand timer
+        self._filter = ""                  # in-folder name filter (current dir only)
 
         # -- header ------------------------------------------------------
         self._back = Gtk.Button(icon_name="go-previous-symbolic",
@@ -191,15 +192,33 @@ class FileBrowserPane(Adw.Bin):
                                         tooltip_text=_("Open in system Files"),
                                         sensitive=False)
         self._open_ext_btn.connect("clicked", lambda *_a: self._open_uri(self._cur()))
+        self._search_btn = Gtk.ToggleButton(icon_name="system-search-symbolic",
+                                            tooltip_text=_("Search this folder"),
+                                            sensitive=False)
         self._header.pack_end(self._view_button())
         self._header.pack_end(self._open_ext_btn)
         self._header.pack_end(self._upload_btn)
         self._header.pack_end(self._new_folder_btn)
+        self._header.pack_end(self._search_btn)
+
+        # -- search bar (filters the current folder by name) -------------
+        self._search_entry = Gtk.SearchEntry(
+            placeholder_text=_("Filter this folder by name…"), hexpand=True)
+        self._search_entry.connect("search-changed", self._on_filter_changed)
+        self._search_bar = Gtk.SearchBar()
+        self._search_bar.set_child(self._search_entry)
+        self._search_bar.connect_entry(self._search_entry)
+        self._search_bar.set_key_capture_widget(self)
+        self._search_btn.bind_property(
+            "active", self._search_bar, "search-mode-enabled",
+            GObject.BindingFlags.BIDIRECTIONAL)
+        self._search_bar.connect("notify::search-mode-enabled",
+                                 self._on_search_mode)
 
         # -- views -------------------------------------------------------
-        # Single click selects; double click opens (Nautilus-style).
+        # Single click selects (Ctrl/Shift extends); double click opens.
         self._flow = Gtk.FlowBox(
-            selection_mode=Gtk.SelectionMode.SINGLE, homogeneous=True,
+            selection_mode=Gtk.SelectionMode.MULTIPLE, homogeneous=True,
             activate_on_single_click=False,
             valign=Gtk.Align.START, max_children_per_line=12, min_children_per_line=2,
             row_spacing=6, column_spacing=6, margin_top=12, margin_bottom=12,
@@ -209,7 +228,7 @@ class FileBrowserPane(Adw.Bin):
                                          vexpand=True, child=self._flow)
 
         # The list fills the pane directly (like the grid view) — no extra card.
-        self._list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.SINGLE,
+        self._list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.MULTIPLE,
                                  activate_on_single_click=False)
         self._list.set_show_separators(True)
         list_box = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER,
@@ -223,8 +242,14 @@ class FileBrowserPane(Adw.Bin):
 
         toolbar = Adw.ToolbarView()
         toolbar.add_top_bar(self._header)
+        toolbar.add_top_bar(self._search_bar)
         toolbar.set_content(self._stack)
         self.set_child(toolbar)
+
+        # Delete trashes the current selection (Nautilus-style).
+        keys = Gtk.EventControllerKey()
+        keys.connect("key-pressed", self._on_key)
+        self.add_controller(keys)
 
     # -- view / sort dropdown --------------------------------------------
     def _view_button(self) -> Gtk.MenuButton:
@@ -283,6 +308,37 @@ class FileBrowserPane(Adw.Bin):
             self._sort_key = key
             self._sort_desc = False
         self._render_entries()
+
+    # -- search / filter --------------------------------------------------
+    def _on_filter_changed(self, entry) -> None:
+        self._filter = entry.get_text().strip().lower()
+        self._render_entries()
+
+    def _on_search_mode(self, bar, _pspec) -> None:
+        # Closing the search bar clears the filter and restores the full listing.
+        if not bar.get_search_mode() and self._filter:
+            self._filter = ""
+            self._search_entry.set_text("")
+            self._render_entries()
+
+    # -- selection (multi-select aware) ----------------------------------
+    def _selection(self) -> list[dict]:
+        """The entries currently selected in the active view."""
+        if self._view == "grid":
+            widgets = self._flow.get_selected_children()
+        else:
+            widgets = self._list.get_selected_rows()
+        return [e for e in (getattr(w, "_entry", None) for w in widgets) if e]
+
+    def _on_key(self, _ctrl, keyval, _code, _state) -> bool:
+        from gi.repository import Gdk
+
+        if keyval in (Gdk.KEY_Delete, Gdk.KEY_KP_Delete):
+            targets = self._selection()
+            if targets:
+                self._trash(targets)
+                return True
+        return False
 
     # -- list header (a non-selectable first row, so columns align) ------
     def _list_header_row(self) -> Gtk.ListBoxRow:
@@ -353,9 +409,13 @@ class FileBrowserPane(Adw.Bin):
         path = self._cur()
         if path is None:
             return
-        # New directory: drop any inline-expanded folders from the previous one.
+        # New directory: drop any inline-expanded folders from the previous one,
+        # and reset the (current-folder-only) name filter.
         self._expanded = set()
         self._child_cache = {}
+        if self._search_btn.get_active():
+            self._search_btn.set_active(False)  # also clears _filter via _on_search_mode
+        self._filter = ""
         if self._toggle_src:
             GLib.source_remove(self._toggle_src)
             self._toggle_src = None
@@ -421,10 +481,20 @@ class FileBrowserPane(Adw.Bin):
                        reverse=self._sort_desc)
         return dirs + files
 
+    def _filtered(self, entries) -> list[dict]:
+        """Entries whose name contains the active filter (case-insensitive)."""
+        if not self._filter:
+            return entries
+        return [e for e in entries if self._filter in e["name"].lower()]
+
     def _render_entries(self) -> None:
         if not self._entries:
             self._show_status("folder-symbolic", _("Empty folder"),
                               _("There's nothing here yet."))
+            return
+        if self._filter and not self._filtered(self._entries):
+            self._show_status("system-search-symbolic", _("No matches"),
+                              _("Nothing in this folder matches “%s”.") % self._filter)
             return
         if self._view == "grid":
             self._render_grid()
@@ -435,7 +505,7 @@ class FileBrowserPane(Adw.Bin):
 
     def _render_grid(self) -> None:
         self._clear(self._flow)
-        for entry in self._sort(self._entries):
+        for entry in self._sort(self._filtered(self._entries)):
             self._flow.append(self._grid_item(entry))
 
     def _render_list(self) -> None:
@@ -443,7 +513,7 @@ class FileBrowserPane(Adw.Bin):
         self._list.append(self._list_header_row())
 
         def walk(entries, depth):
-            for entry in self._sort(entries):
+            for entry in self._sort(self._filtered(entries)):
                 self._list.append(self._list_row(entry, depth))
                 if entry["is_dir"] and entry["path"] in self._expanded:
                     children = self._child_cache.get(entry["path"])
@@ -526,8 +596,15 @@ class FileBrowserPane(Adw.Bin):
 
     # In the list, single-click a folder to expand it inline (a tree drop-down);
     # double-click to navigate into it. Files open on double-click.
-    def _on_list_pressed(self, _gesture, n_press, _x, _y, entry) -> None:
+    def _on_list_pressed(self, gesture, n_press, _x, _y, entry) -> None:
         if entry is None:
+            return
+        from gi.repository import Gdk
+
+        # Ctrl/Shift-click is multi-selection — let the listbox handle it; don't
+        # also expand/navigate the folder under the pointer.
+        if gesture.get_current_event_state() & (
+                Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SHIFT_MASK):
             return
         if not entry["is_dir"]:
             if n_press == 2:
@@ -586,6 +663,20 @@ class FileBrowserPane(Adw.Bin):
         widget.add_controller(gesture)
 
     def _on_right_click(self, _gesture, _n, x, y, widget, entry) -> None:
+        # Operate on the whole selection when the clicked item is part of a
+        # multi-selection; otherwise act on (and select) just this item.
+        selection = self._selection()
+        sel_paths = {e["path"] for e in selection}
+        multi = entry["path"] in sel_paths and len(selection) > 1
+        if not multi:
+            if self._view == "grid":
+                self._flow.unselect_all()
+                self._flow.select_child(widget)
+            else:
+                self._list.unselect_all()
+                self._list.select_row(widget)
+        targets = selection if multi else [entry]
+
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, margin_top=6,
                       margin_bottom=6, margin_start=6, margin_end=6)
         popover = Gtk.Popover(child=box, has_arrow=True)
@@ -595,17 +686,20 @@ class FileBrowserPane(Adw.Bin):
         # an unparented-on-popdown popover attached to the row.
         popover.connect("closed", lambda p: p.unparent() if p.get_parent() else None)
 
-        def add(label, handler, *, destructive=False):
+        def add(label, handler, arg, *, destructive=False):
             btn = Gtk.Button(label=label)
             btn.add_css_class("flat")
             if destructive:
                 btn.add_css_class("destructive-action")
-            btn.connect("clicked", lambda *_a: (popover.popdown(), handler(entry)))
+            btn.connect("clicked", lambda *_a: (popover.popdown(), handler(arg)))
             box.append(btn)
 
-        add(_("Open"), self._activate)
-        add(_("Rename"), self._rename)
-        add(_("Move to Trash"), self._trash, destructive=True)
+        if not multi:  # single-item-only actions
+            add(_("Open"), self._activate, entry)
+            add(_("Rename…"), self._rename, entry)
+        add(_("Copy to…"), self._copy_to, targets)
+        add(_("Move to…"), self._move_to, targets)
+        add(_("Move to Trash"), self._trash, targets, destructive=True)
         popover.popup()
 
     def _open_uri(self, path) -> None:
@@ -619,8 +713,14 @@ class FileBrowserPane(Adw.Bin):
 
     # -- file operations (off-thread; trash is recoverable) --------------
     def _set_actions(self, enabled: bool) -> None:
-        for btn in (self._new_folder_btn, self._upload_btn, self._open_ext_btn):
+        for btn in (self._new_folder_btn, self._upload_btn, self._open_ext_btn,
+                    self._search_btn):
             btn.set_sensitive(enabled)
+
+    @staticmethod
+    def _as_list(entries) -> list[dict]:
+        items = entries if isinstance(entries, list) else [entries]
+        return [e for e in items if e]
 
     def _toast_then_reload(self, error, ok_msg: str, err_msg: str) -> bool:
         if error:
@@ -659,10 +759,16 @@ class FileBrowserPane(Adw.Bin):
         dialog.connect("response", on_response)
         dialog.present(self._window)
 
-    def _trash(self, entry: dict) -> None:
+    def _trash(self, entries) -> None:
+        entries = self._as_list(entries)
+        if not entries:
+            return
+        n = len(entries)
         dialog = Adw.AlertDialog(
             heading=_("Move to Trash?"),
-            body=_("“%s” will be moved to the Trash.") % entry["name"])
+            body=(_("“%s” will be moved to the Trash.") % entries[0]["name"]
+                  if n == 1 else
+                  _("%d items will be moved to the Trash.") % n))
         dialog.add_response("cancel", _("Cancel"))
         dialog.add_response("trash", _("Move to Trash"))
         dialog.set_response_appearance("trash", Adw.ResponseAppearance.DESTRUCTIVE)
@@ -670,14 +776,67 @@ class FileBrowserPane(Adw.Bin):
         def on_response(_d, response):
             if response != "trash":
                 return
-            path = entry["path"]
-            run_async(
-                lambda: Gio.File.new_for_path(path).trash(None),
-                lambda _r, err: self._toast_then_reload(
-                    err, _("Moved to Trash."), _("Couldn't delete: %s")))
+            paths = [e["path"] for e in entries]
+
+            def work():
+                for path in paths:
+                    Gio.File.new_for_path(path).trash(None)
+
+            run_async(work, lambda _r, err: self._toast_then_reload(
+                err, _("Moved to Trash."), _("Couldn't delete: %s")))
 
         dialog.connect("response", on_response)
         dialog.present(self._window)
+
+    # Copy/Move to a chosen folder. Copying to a local folder is how you
+    # "download" a file off a network mount.
+    def _copy_to(self, entries) -> None:
+        self._transfer(self._as_list(entries), move=False)
+
+    def _move_to(self, entries) -> None:
+        self._transfer(self._as_list(entries), move=True)
+
+    def _transfer(self, entries, *, move: bool) -> None:
+        if not entries:
+            return
+        dialog = Gtk.FileDialog(
+            title=_("Move to folder") if move else _("Copy to folder"))
+
+        def on_pick(fd, result):
+            try:
+                folder = fd.select_folder_finish(result)
+            except GLib.Error:
+                return  # cancelled
+            dest_dir = folder.get_path() if folder else None
+            if not dest_dir:
+                return
+            srcs = [e["path"] for e in entries]
+
+            def work():
+                for src in srcs:
+                    base = os.path.basename(src.rstrip("/"))
+                    target = os.path.join(dest_dir, base)
+                    if move:
+                        shutil.move(src, target)
+                    elif os.path.isdir(src):
+                        shutil.copytree(src, target)
+                    else:
+                        shutil.copy2(src, target)
+
+            self._window.add_toast(_("Moving…") if move else _("Copying…"))
+            run_async(work, lambda _r, err: self._after_transfer(err, move))
+
+        dialog.select_folder(self._window, None, on_pick)
+
+    def _after_transfer(self, error, move: bool) -> bool:
+        if error:
+            self._window.add_toast(
+                (_("Move failed: %s") if move else _("Copy failed: %s")) % error)
+            return False
+        self._window.add_toast(_("Moved.") if move else _("Copied."))
+        if move:
+            self._load()  # sources are gone from this folder; refresh
+        return False
 
     def _on_new_folder(self, _btn) -> None:
         dialog = Adw.AlertDialog(heading=_("New folder"),

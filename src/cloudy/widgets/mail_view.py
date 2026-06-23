@@ -64,7 +64,8 @@ class MailView(Adw.Bin):
         self._next_token = None   # pagination cursor for the active folder
         self._more_row = None     # the "Load older" list row, when present
         self._loading_more = False
-        self._query = ""          # mail search filter (matches loaded messages)
+        self._query = ""          # live filter over loaded messages (type-ahead)
+        self._search_query = ""   # committed server-side search (Enter); "" = browse
 
         # -- left pane: source tabs + context/folder dropdowns + list ----
         self._ctx_dd = Gtk.DropDown(model=Gtk.StringList.new([]), tooltip_text=_("Choose"))
@@ -166,8 +167,12 @@ class MailView(Adw.Bin):
                           margin_top=6, margin_bottom=6, margin_start=10, margin_end=10)
             bar.append(self._folder_dd)
             sidebar_tb.add_top_bar(bar)
-        self._search = Gtk.SearchEntry(placeholder_text=_("Search mail…"), hexpand=True)
+        self._search = Gtk.SearchEntry(
+            placeholder_text=_("Filter — press Enter to search the server"),
+            hexpand=True)
         self._search.connect("search-changed", self._on_search_changed)
+        # Enter searches the whole folder server-side (finds mail not yet loaded).
+        self._search.connect("activate", self._on_search_activate)
         search_bar = Gtk.Box(margin_top=6, margin_bottom=6,
                             margin_start=10, margin_end=10)
         search_bar.append(self._search)
@@ -453,6 +458,11 @@ class MailView(Adw.Bin):
 
     def _select_folder(self, fid) -> None:
         self._folder_id = fid
+        # A folder switch leaves search mode and clears the box.
+        self._search_query = ""
+        self._query = ""
+        if self._search.get_text():
+            self._search.set_text("")
         if self._source == "me":  # remember the Me-mailbox folder per account
             self._window.remember_mail_folder(self._account.id, fid)
         # Always revalidate (even on a fresh cache) so the pagination cursor for
@@ -469,32 +479,35 @@ class MailView(Adw.Bin):
     def _load_async(self) -> None:
         folder_id = self._folder_id  # logical (may be "unread")
         fetch = self._fetch_folder()
+        query = self._search_query
 
         def work():
             from .clients import build_account_client
 
             client = build_account_client(self._window.get_application(), self._account)
-            return client.list_messages_page(fetch)
+            return client.list_messages_page(fetch, query=query)
 
-        run_async(work, lambda result, error: self._on_loaded(folder_id, result, error))
+        run_async(work, lambda result, error: self._on_loaded(folder_id, query, result, error))
 
-    def _on_loaded(self, folder_id, result, error) -> bool:
+    def _on_loaded(self, folder_id, query, result, error) -> bool:
+        # Ignore responses that no longer match the active folder/search.
+        stale = folder_id != self._folder_id or query != self._search_query
         if error:
             # Never cache errors; keep any cached list on screen and only
-            # surface the error if the active folder has nothing to show.
-            if folder_id == self._folder_id and not self._has_data:
+            # surface the error if the active view has nothing to show.
+            if not stale and not self._has_data:
                 if is_scope_error(error):
                     self._reauth_prompt()
                 else:
                     self._set_placeholder(_("Couldn't load mail: %s") % error)
             return False
         messages, next_token = result
-        self._window.get_application().cache.set(
-            f"{self._account.id}:messages:{folder_id}", messages
-        )
-        # A late response for a folder the user already switched away from just
-        # updates the cache; don't clobber the visible list.
-        if folder_id == self._folder_id:
+        # Only the plain folder listing is cached; search results are transient.
+        if not query:
+            self._window.get_application().cache.set(
+                f"{self._account.id}:messages:{folder_id}", messages
+            )
+        if not stale:
             self._next_token = next_token
             self._render(messages)
         return False
@@ -504,7 +517,9 @@ class MailView(Adw.Bin):
         self._rows_by_id = {}
         self._more_row = None  # dropped by _clear(); rebuilt by _sync_more_row()
         if not messages:
-            self._set_placeholder(_("This folder is empty."))
+            self._set_placeholder(
+                _("No messages match “%s”.") % self._search_query
+                if self._search_query else _("This folder is empty."))
             self._has_data = False
             return
         self._clear()
@@ -539,6 +554,7 @@ class MailView(Adw.Bin):
         token = self._next_token
         logical = self._folder_id
         fetch = self._fetch_folder()
+        query = self._search_query
         if not token or self._loading_more:
             return
         self._loading_more = True
@@ -552,26 +568,31 @@ class MailView(Adw.Bin):
             from .clients import build_account_client
 
             client = build_account_client(self._window.get_application(), self._account)
-            return client.list_messages_page(fetch, page_token=token)
+            return client.list_messages_page(fetch, page_token=token, query=query)
 
-        run_async(work, lambda result, error: self._on_more(logical, result, error))
+        run_async(work, lambda result, error: self._on_more(logical, query, result, error))
 
-    def _on_more(self, folder, result, error) -> bool:
+    def _on_more(self, folder, query, result, error) -> bool:
         self._loading_more = False
-        if error or folder != self._folder_id:
+        if error or folder != self._folder_id or query != self._search_query:
             self._sync_more_row()  # restore the button (drop the loading state)
             if error:
                 self._window.add_toast(_("Couldn't load more: %s") % error)
             return False
         messages, next_token = result
         self._next_token = next_token
-        # Append to the visible list and extend the cached page.
-        cache = self._window.get_application().cache
-        cached = cache.get(self._cache_key())
-        base = list(cached[0]) if cached else []
-        existing = {m.get("id") for m in base}
-        new = [m for m in messages if m.get("id") not in existing]
-        cache.set(self._cache_key(), base + new)
+        # Append to the visible list. The plain folder listing also extends its
+        # cached page; search results are transient and never cached.
+        if query:
+            existing = set(self._messages_by_id)
+            new = [m for m in messages if m.get("id") not in existing]
+        else:
+            cache = self._window.get_application().cache
+            cached = cache.get(self._cache_key())
+            base = list(cached[0]) if cached else []
+            existing = {m.get("id") for m in base}
+            new = [m for m in messages if m.get("id") not in existing]
+            cache.set(self._cache_key(), base + new)
         if self._more_row is not None:
             self._list.remove(self._more_row)
             self._more_row = None
@@ -608,10 +629,32 @@ class MailView(Adw.Bin):
             return True
         return False
 
-    # -- search (filter the loaded messages) ------------------------------
+    # -- search -----------------------------------------------------------
+    # Two layers: typing instantly filters the already-loaded list; pressing
+    # Enter runs a server-side search across the whole folder (catches mail not
+    # loaded yet). Clearing the box returns to the plain folder listing.
     def _on_search_changed(self, entry) -> None:
-        self._query = entry.get_text().strip().lower()
+        text = entry.get_text().strip()
+        if not text and self._search_query:
+            # Box cleared while showing server results → back to the folder.
+            self._search_query = ""
+            self._query = ""
+            self._show_cached_or_placeholder()
+            self._load_async()
+            return
+        self._query = text.lower()
         self._list.invalidate_filter()
+
+    def _on_search_activate(self, entry) -> None:
+        text = entry.get_text().strip()
+        if not text or text == self._search_query:
+            return
+        self._search_query = text
+        self._query = ""  # server results must not be hidden by the live filter
+        self._has_data = False
+        self._next_token = None
+        self._set_placeholder(_("Searching…"))
+        self._load_async()
 
     def _filter_row(self, row) -> bool:
         unread_only = self._folder_id == "unread"
@@ -823,9 +866,10 @@ class MailView(Adw.Bin):
         run_async(work, lambda full, error: self._show_message(mid, full, error))
 
     def _parse_invite(self, client, mid, msg) -> dict | None:
-        """If the message carries a ``text/calendar`` REQUEST, fetch + parse it so
-        the reader can offer Accept/Decline. Runs on the worker thread (network).
-        Returns the invite dict with ``my_response`` filled in, or ``None``."""
+        """If the message carries a ``text/calendar`` invite (REQUEST or CANCEL),
+        fetch + parse it so the reader can show the event and offer Accept/Decline.
+        Runs on the worker thread (network). Returns the invite dict with
+        ``my_response`` filled in, or ``None``."""
         from ..core import ics
 
         for att in msg.get("attachments") or []:
@@ -838,7 +882,7 @@ class MailView(Adw.Bin):
                 invite = ics.parse_invite(raw.decode("utf-8", "replace"))
             except Exception:  # noqa: BLE001 - a bad/partial .ics just means no bar
                 invite = None
-            if not invite or invite.get("method") != "REQUEST":
+            if not invite or invite.get("method") not in ("REQUEST", "CANCEL"):
                 continue
             mine = ics.find_attendee(invite, self._account.display_name)
             invite["my_response"] = (mine or {}).get("partstat", "")

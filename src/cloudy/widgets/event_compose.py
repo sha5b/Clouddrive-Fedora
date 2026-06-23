@@ -81,6 +81,12 @@ class EventWindow(EditorWindow):
         group.add(self._location)
         self._attendees = Adw.EntryRow(title=_("Attendees (comma-separated)"))
         group.add(self._attendees)
+        # Teams meeting (Microsoft) / Google Meet — the provider provisions the
+        # link and fills it on the event, so the detail view shows a Join button.
+        self._online = Adw.SwitchRow(
+            title=_("Online meeting"),
+            subtitle=_("Add a Teams / Google Meet link"))
+        group.add(self._online)
 
         self._calendar = Gtk.Calendar()
         cal_group = Adw.PreferencesGroup(title=_("Day"))
@@ -160,7 +166,8 @@ class EventWindow(EditorWindow):
                               start_iso=local_to_utc_iso(start, all_day=all_day),
                               end_iso=local_to_utc_iso(end, all_day=all_day),
                               location=self._location.get_text().strip(), body=body,
-                              attendees=attendees, all_day=all_day),
+                              attendees=attendees, all_day=all_day,
+                              online=self._online.get_active()),
             self._on_created)
 
     def _on_created(self, _result, error) -> bool:

@@ -91,6 +91,17 @@ SPDX-FileCopyrightText: 2026 Shahab Nedaei
   </screenshots>
 
   <releases>
+    <release version="0.2.6" date="2026-06-22">
+      <description>
+        <p>Drives that stay mounted, mailbox search, and more file actions.</p>
+        <ul>
+          <li>Mounted drives now come back on their own — after a reboot, or if a drive drops out, Cloudy remounts the ones you had open (no need to mount them again each time) and reconnects a drive whose connection died</li>
+          <li>Search your whole mailbox: type to filter the open list instantly, or press Enter to search the entire folder on the server and find older mail</li>
+          <li>The file browser can now select several items at once and copy or move them to another folder — copy to a local folder to download files off a cloud drive</li>
+          <li>Filter the current folder by name with the new search button in the file browser</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.2.5" date="2026-06-21">
       <description>
         <p>Clearer mail headers and a more accurate Chat presence.</p>

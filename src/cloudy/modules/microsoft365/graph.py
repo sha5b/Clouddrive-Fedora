@@ -226,6 +226,23 @@ class GraphClient:
             detail = exc.read().decode(errors="replace")
             raise GraphError(f"Graph {exc.code}: {detail}") from exc
 
+    def _get_all(self, path: str, scopes: Sequence[str],
+                 headers: dict | None = None, *, max_pages: int = 50) -> list[dict]:
+        """GET a collection, following ``@odata.nextLink`` so enumerations aren't
+        capped at one page (Graph silently truncates at ``$top``/its default).
+        Returns the concatenated ``value`` arrays. ``max_pages`` bounds a runaway
+        cursor. Use for full enumerations (folders, groups, drives, contacts) —
+        NOT for message/event lists, which page intentionally via the UI."""
+        items: list[dict] = []
+        url: str | None = path
+        for _ in range(max_pages):
+            data = self._get(url, scopes, headers)
+            items.extend(data.get("value", []))
+            url = data.get("@odata.nextLink")
+            if not url:
+                break
+        return items
+
     def _post(self, path: str, body: dict, scopes: Sequence[str]) -> dict:
         return self._write("POST", path, body, scopes)
 
@@ -270,24 +287,22 @@ class GraphClient:
     # -- Files: drives & sites -------------------------------------------
     def list_drives(self) -> list[Drive]:
         """The user's own drives (personal OneDrive / business)."""
-        data = self._get("/me/drives", SCOPES_FILES)
-        return [self._drive_from_json(d) for d in data.get("value", [])]
+        return [self._drive_from_json(d)
+                for d in self._get_all("/me/drives", SCOPES_FILES)]
 
     def search_sites(self, query: str) -> list[dict]:
         """Search SharePoint sites (for Teams/SharePoint libraries)."""
         q = urllib.parse.quote(query)
-        data = self._get(f"/sites?search={q}", SCOPES_FILES)
         return [
             {"id": s["id"], "name": s.get("displayName", s.get("name", "")),
              "web_url": s.get("webUrl", "")}
-            for s in data.get("value", [])
+            for s in self._get_all(f"/sites?search={q}", SCOPES_FILES)
         ]
 
     def list_site_drives(self, site_id: str) -> list[Drive]:
         """Document libraries of a SharePoint site (Teams files live here)."""
-        data = self._get(f"/sites/{site_id}/drives", SCOPES_FILES)
         drives = []
-        for d in data.get("value", []):
+        for d in self._get_all(f"/sites/{site_id}/drives", SCOPES_FILES):
             drive = self._drive_from_json(d)
             drive.site_id = site_id
             drives.append(drive)
@@ -303,8 +318,8 @@ class GraphClient:
         (this is the cold-load bottleneck for users in many Teams). Already runs
         on a worker thread via the views' ``run_async``.
         """
-        data = self._get("/me/joinedTeams", SCOPES_TEAMS)
-        teams = [t for t in data.get("value", []) if t.get("id")]
+        teams = [t for t in self._get_all("/me/joinedTeams", SCOPES_TEAMS)
+                 if t.get("id")]
         if not teams:
             return []
         # Warm the token once so the parallel calls reuse the cached token
@@ -367,12 +382,12 @@ class GraphClient:
         These have a shared mailbox (conversations) and a group calendar.
         Needs Group.Read.All (usually admin-consented).
         """
-        data = self._get(
+        groups = self._get_all(
             "/me/memberOf?$select=id,displayName,groupTypes,mailEnabled&$top=100",
             SCOPES_GROUPS,
         )
         out = []
-        for g in data.get("value", []):
+        for g in groups:
             if g.get("@odata.type") != "#microsoft.graph.group":
                 continue
             if "Unified" not in (g.get("groupTypes") or []):
@@ -396,11 +411,10 @@ class GraphClient:
         return folders
 
     def _mail_folders(self, base: str, scopes) -> list[dict]:
-        data = self._get(f"{base}?$top=50", scopes)
         folders = [
             {"id": f["id"], "name": f.get("displayName", ""),
              "unread": f.get("unreadItemCount", 0), "well_known": ""}
-            for f in data.get("value", [])
+            for f in self._get_all(f"{base}?$top=50", scopes)
         ]
         # Tag the Inbox via the locale-independent well-known alias (the Graph id
         # is opaque and the name is localized, e.g. "Posteingang"). The alias is
@@ -426,12 +440,14 @@ class GraphClient:
         return self.list_messages_page(folder_id, limit=limit)[0]
 
     def list_messages_page(self, folder_id: str = "inbox", *, limit: int = 25,
-                           page_token: str | None = None):
+                           page_token: str | None = None, query: str = ""):
         """Like :meth:`list_messages` but returns ``(messages, next_token)``.
 
         ``next_token`` is the Graph ``@odata.nextLink`` (an absolute URL) or
         ``None`` when there are no older messages; pass it back as
-        ``page_token`` to fetch the following page."""
+        ``page_token`` to fetch the following page. When ``query`` is set the
+        folder is searched server-side (Graph ``$search``) instead of listed —
+        group-thread folders, which have no search endpoint, ignore it."""
         if folder_id.startswith("group:"):
             return self._list_group_threads(
                 folder_id.split(":", 1)[1], limit, page_token)
@@ -439,23 +455,33 @@ class GraphClient:
             _, address, fid = _split_id(folder_id, 3)
             return self._list_folder_messages(
                 f"/users/{address}", fid, limit, id_prefix=f"shared:{address}:",
-                scopes=SCOPES_MAIL_SHARED, url=page_token)
-        return self._list_folder_messages("/me", folder_id, limit, url=page_token)
+                scopes=SCOPES_MAIL_SHARED, url=page_token, query=query)
+        return self._list_folder_messages("/me", folder_id, limit, url=page_token,
+                                          query=query)
 
     def _list_folder_messages(self, scope_base: str, folder_id: str, limit: int,
                               *, id_prefix: str = "", scopes=SCOPES_MAIL,
-                              url: str | None = None):
+                              url: str | None = None, query: str = ""):
         # A page_token is a full @odata.nextLink (absolute URL); otherwise build
-        # page 1. Keep $/commas literal (Graph-friendly); only the space in the
-        # orderby value needs encoding (a raw space makes urllib reject the URL).
+        # page 1. Keep $/commas literal (Graph-friendly); only values with spaces
+        # (the orderby direction, the search string) need encoding — a raw space
+        # makes urllib reject the URL.
         if url is None:
-            orderby = urllib.parse.quote("receivedDateTime desc")
-            url = (
-                f"{scope_base}/mailFolders/{folder_id}/messages"
-                f"?$top={limit}"
-                f"&$select=subject,from,receivedDateTime,bodyPreview,isRead,importance,flag"
-                f"&$orderby={orderby}"
-            )
+            select = "subject,from,receivedDateTime,bodyPreview,isRead,importance,flag"
+            if query:
+                # $search ranks by relevance and cannot be combined with
+                # $orderby; the KQL value must be double-quoted and encoded.
+                search = urllib.parse.quote(f'"{query}"')
+                url = (
+                    f"{scope_base}/mailFolders/{folder_id}/messages"
+                    f"?$top={limit}&$select={select}&$search={search}"
+                )
+            else:
+                orderby = urllib.parse.quote("receivedDateTime desc")
+                url = (
+                    f"{scope_base}/mailFolders/{folder_id}/messages"
+                    f"?$top={limit}&$select={select}&$orderby={orderby}"
+                )
         data = self._get(url, scopes)
         out = []
         for m in data.get("value", []):
@@ -795,10 +821,9 @@ class GraphClient:
                 out.append({"name": name or addr, "email": addr})
 
         try:
-            data = self._get(
-                f"/me/people?$select=displayName,scoredEmailAddresses&$top={limit}",
-                SCOPES_PEOPLE)
-            for p in data.get("value", []):
+            for p in self._get_all(
+                    f"/me/people?$select=displayName,scoredEmailAddresses&$top={limit}",
+                    SCOPES_PEOPLE):
                 name = p.get("displayName", "")
                 for ea in p.get("scoredEmailAddresses", []) or []:
                     add(name, ea.get("address"))
@@ -806,10 +831,9 @@ class GraphClient:
             pass  # People.Read not granted yet (account predates the scope)
 
         try:
-            data = self._get(
-                f"/me/contacts?$select=displayName,emailAddresses&$top={limit}",
-                SCOPES_MAIL)
-            for c in data.get("value", []):
+            for c in self._get_all(
+                    f"/me/contacts?$select=displayName,emailAddresses&$top={limit}",
+                    SCOPES_MAIL):
                 name = c.get("displayName", "")
                 for ea in c.get("emailAddresses", []) or []:
                     add(name or ea.get("name", ""), ea.get("address"))
@@ -819,10 +843,9 @@ class GraphClient:
 
     # -- Calendar ---------------------------------------------------------
     def list_calendars(self) -> list[dict]:
-        data = self._get("/me/calendars?$top=50", SCOPES_MAIL)
         return [
             {"id": c["id"], "name": c.get("name", "")}
-            for c in data.get("value", [])
+            for c in self._get_all("/me/calendars?$top=50", SCOPES_MAIL)
         ]
 
     def list_events(self, start_iso: str, end_iso: str, *, limit: int = 50) -> list[dict]:
@@ -928,19 +951,25 @@ class GraphClient:
     def create_event(self, *, subject: str, start_iso: str, end_iso: str,
                      source: str = "me", address: str | None = None,
                      location: str = "", body: str = "", attendees=None,
-                     all_day: bool = False, html: bool = False) -> dict:
+                     all_day: bool = False, html: bool = False,
+                     online: bool = False) -> dict:
         """Create an event on the current source's calendar.
 
         ``me`` → ``/me/events``; ``shared`` → ``/users/{address}/events`` (needs
         Calendars.ReadWrite.Shared). Times are ISO-8601; a trailing ``Z`` is
-        dropped and the slot is sent as UTC. Group/team calendars are read-only
-        here (the Calendar view doesn't offer New there)."""
+        dropped and the slot is sent as UTC. ``online=True`` makes it a Teams
+        meeting — Graph provisions the meeting and fills ``onlineMeeting.joinUrl``
+        on the returned event. Group/team calendars are read-only here (the
+        Calendar view doesn't offer New there)."""
         event = {
             "subject": subject,
             "start": {"dateTime": start_iso.rstrip("Z"), "timeZone": "UTC"},
             "end": {"dateTime": end_iso.rstrip("Z"), "timeZone": "UTC"},
             "isAllDay": all_day,
         }
+        if online:
+            event["isOnlineMeeting"] = True
+            event["onlineMeetingProvider"] = "teamsForBusiness"
         if location:
             event["location"] = {"displayName": location}
         if body:
@@ -1001,7 +1030,8 @@ class GraphClient:
             "endDateTime": end_iso,
             "$orderby": "start/dateTime",
             "$top": str(limit),
-            "$select": "subject,start,end,location,isAllDay,responseStatus",
+            "$select": ("subject,start,end,location,isAllDay,responseStatus,"
+                        "isOnlineMeeting,onlineMeeting"),
         })
 
     @staticmethod
@@ -1018,6 +1048,8 @@ class GraphClient:
                 # none|organizer|tentativelyAccepted|accepted|declined|notResponded
                 # Drives the greyed "unanswered invite" styling in the agenda.
                 "response": (e.get("responseStatus") or {}).get("response", ""),
+                "online_url": (e.get("onlineMeeting") or {}).get("joinUrl", "")
+                if e.get("isOnlineMeeting") else "",
             })
         return out
 
@@ -1486,22 +1518,21 @@ class GraphClient:
         Lighter than :meth:`list_teams`, which additionally resolves each team's
         document library; the Teams tab only needs id + name. Needs
         ``Team.ReadBasic.All``."""
-        data = self._get("/me/joinedTeams?$select=id,displayName", SCOPES_TEAMS)
         teams = [{"id": t["id"], "name": t.get("displayName") or "Untitled Team"}
-                 for t in data.get("value", []) if t.get("id")]
+                 for t in self._get_all("/me/joinedTeams?$select=id,displayName",
+                                        SCOPES_TEAMS) if t.get("id")]
         teams.sort(key=lambda t: t["name"].lower())
         return teams
 
     def list_team_channels(self, team_id: str) -> list[dict]:
         """A team's channels: ``[{id, name, description}]``, General first.
         Needs ``Channel.ReadBasic.All`` (tenant-admin consent)."""
-        data = self._get(
-            f"/teams/{team_id}/channels?$select=id,displayName,description",
-            SCOPES_CHANNELS)
         chans = [{"id": c["id"],
                   "name": c.get("displayName") or "Channel",
                   "description": c.get("description") or ""}
-                 for c in data.get("value", []) if c.get("id")]
+                 for c in self._get_all(
+                     f"/teams/{team_id}/channels?$select=id,displayName,description",
+                     SCOPES_CHANNELS) if c.get("id")]
         # General is the default channel — pin it to the top, then alphabetical.
         chans.sort(key=lambda c: (c["name"].lower() != "general", c["name"].lower()))
         return chans

@@ -21,6 +21,7 @@ import json
 import os
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import quote
@@ -78,6 +79,66 @@ def mount_root() -> Path:
 def sync_root() -> Path:
     """Where two-way-synced offline copies live (``…/cloudy/synced``)."""
     return _data_dir() / "synced"
+
+
+# -- remembered mounts (auto-remount on startup) -------------------------
+# A FUSE mount is a live ``rclone mount --daemon`` process; it dies on reboot.
+# To bring drives back automatically we persist *which* drives the user mounted
+# (not the live state) in a small JSON file, and remount them when Cloudy
+# starts. The rclone remote + OAuth token already persist, so remounting needs
+# no re-auth.
+
+def _mount_state_file() -> Path:
+    return _data_dir() / "mounts.json"
+
+
+def _record_key(account_id: str, drive_name: str) -> tuple[str, str]:
+    return (account_id, drive_name)
+
+
+def load_mount_records() -> list[dict]:
+    """Drives the user has asked to keep mounted, as a list of dicts with keys
+    ``account_id``, ``provider``, ``drive_name``, ``drive_id``, ``drive_kind``."""
+    path = _mount_state_file()
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text())
+        return data if isinstance(data, list) else []
+    except (OSError, ValueError):
+        return []
+
+
+def _save_mount_records(records: list[dict]) -> None:
+    path = _mount_state_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(records, indent=2) + "\n")
+
+
+def record_mount(account_id: str, drive) -> None:
+    """Remember a mounted drive so it remounts on the next startup."""
+    records = [
+        r for r in load_mount_records()
+        if _record_key(r.get("account_id", ""), r.get("drive_name", ""))
+        != _record_key(account_id, getattr(drive, "name", ""))
+    ]
+    records.append({
+        "account_id": account_id,
+        "drive_name": getattr(drive, "name", ""),
+        "drive_id": getattr(drive, "id", "") or "",
+        "drive_kind": getattr(drive, "kind", "") or "",
+    })
+    _save_mount_records(records)
+
+
+def forget_mount(account_id: str, drive_name: str) -> None:
+    """Drop a drive from the remembered set (on explicit Unmount)."""
+    records = [
+        r for r in load_mount_records()
+        if _record_key(r.get("account_id", ""), r.get("drive_name", ""))
+        != _record_key(account_id, drive_name)
+    ]
+    _save_mount_records(records)
 
 
 def _account_label(account) -> str:
@@ -207,6 +268,63 @@ class MountManager:
 
     def is_mounted(self, mountpoint: Path) -> bool:
         return str(mountpoint) in self.active_mounts()
+
+    def _await_mount(self, mountpoint: Path, timeout: float = 10.0) -> bool:
+        """Poll the mount table until ``mountpoint`` appears (the FUSE daemon
+        comes up shortly after `--daemon` forks). Returns True once mounted, or
+        False if it never shows within ``timeout``. Runs on a worker thread
+        (mount() is called via run_async), so a short sleep is fine."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self.is_mounted(mountpoint):
+                return True
+            time.sleep(0.25)
+        return self.is_mounted(mountpoint)
+
+    @staticmethod
+    def _process_cmdlines() -> str:
+        """All running process command lines (host-aware), as one blob.
+
+        Used to tell whether a live ``rclone``/``onedriver`` daemon still backs a
+        mountpoint without ever touching the FUSE path (a stat on a hung mount
+        can stall). Best-effort — returns ``""`` if ``ps`` can't run."""
+        try:
+            return subprocess.run(
+                [*_host_prefix(), "ps", "-eo", "args"],
+                capture_output=True, text=True, timeout=10).stdout
+        except (OSError, subprocess.SubprocessError):
+            return ""
+
+    def _has_mount_process(self, mountpoint: Path) -> bool:
+        mp = str(mountpoint)
+        for line in self._process_cmdlines().splitlines():
+            if mp in line and "mount" in line and ("rclone" in line or "onedriver" in line):
+                return True
+        return False
+
+    def mount_health(self, mountpoint: Path) -> str:
+        """Health of a mountpoint, without touching it (stall-proof):
+
+          * ``"active"`` — in the mount table *and* a daemon still serves it;
+          * ``"stale"``  — in the mount table but the daemon is gone (I/O would
+            fail with "transport endpoint is not connected"); needs clearing
+            before it can be remounted;
+          * ``"absent"`` — not mounted.
+        """
+        if not self.is_mounted(mountpoint):
+            return "absent"
+        return "active" if self._has_mount_process(mountpoint) else "stale"
+
+    def _lazy_unmount(self, mountpoint: Path) -> None:
+        """Detach a stale/dead FUSE mount (lazy ``-z``, so even a hung endpoint
+        releases). Leaves the sidebar bookmark in place — the path is unchanged
+        and a remount reuses it."""
+        for tool in ("fusermount3", "fusermount"):
+            res = subprocess.run(
+                [*_host_prefix(), tool, "-uz", str(mountpoint)],
+                capture_output=True, text=True)
+            if res.returncode == 0:
+                return
 
     # -- host-aware rclone execution -------------------------------------
     def _rclone_binary(self) -> str | None:
@@ -380,7 +498,19 @@ class MountManager:
 
         if not self.is_mounted(mountpoint):
             if backend is RCLONE:
-                subprocess.run(self.rclone_mount_argv(remote, mountpoint), check=True)
+                # `rclone mount --daemon` forks and the parent exits 0 *before*
+                # the FUSE mount is actually up, so a 0 return tells us nothing.
+                # Capture the parent's stderr (config/auth errors surface here),
+                # then poll the mount table until the mount really appears.
+                proc = subprocess.run(self.rclone_mount_argv(remote, mountpoint),
+                                      capture_output=True, text=True)
+                err = (proc.stderr or proc.stdout or "").strip()
+                if proc.returncode != 0:
+                    raise RuntimeError("rclone mount failed: %s" % (err or "unknown error"))
+                if not self._await_mount(mountpoint):
+                    raise RuntimeError(
+                        "rclone mount didn't come up%s"
+                        % (": " + err if err else " (timed out)"))
             elif backend is ONEDRIVER:
                 subprocess.run([ONEDRIVER.path() or ONEDRIVER.binary, str(mountpoint)], check=True)
 
@@ -389,6 +519,32 @@ class MountManager:
             name=name, mountpoint=mountpoint, backend=backend.name,
             drive_id=drive_id, active=self.is_mounted(mountpoint),
         )
+
+    def mount_drive(self, *, provider: str, drive, token: str,
+                    base: Path | None = None) -> MountInfo:
+        """Create the rclone remote for ``drive`` from a stored token and mount
+        it. Shared by the Files view and the startup auto-remount so the remote
+        options stay in one place. Blocking — call off the UI thread."""
+        google = provider == "google"
+        backend = "drive" if google else "onedrive"
+        remote = self._safe_name(drive.name)
+        if google:
+            opts = {"token": token, "scope": "drive"}
+            # "Shared with me" and Shared Drives are the same backend with a
+            # different view selector (rclone drive config keys).
+            if drive.kind == "google_shared_with_me":
+                opts["shared_with_me"] = "true"
+            elif drive.kind == "google_shared_drive" and drive.id:
+                opts["team_drive"] = drive.id
+        else:
+            opts = {
+                "token": token,
+                "drive_id": drive.id,
+                "drive_type": self.drive_type_for(drive.kind),
+            }
+        self.create_remote(remote, backend, opts)
+        return self.mount(name=drive.name, remote=remote,
+                          drive_id=drive.id, base=base)
 
     def unmount(self, mountpoint: Path) -> None:
         if self.is_mounted(mountpoint):
@@ -425,3 +581,56 @@ class MountManager:
         uri = "file://" + quote(str(mountpoint))
         kept = [l for l in path.read_text().splitlines() if l.split(" ", 1)[0] != uri]
         path.write_text("\n".join(kept) + ("\n" if kept else ""))
+
+
+def remount_saved(registry, secrets, log=lambda _m: None) -> int:
+    """Remount every remembered drive that is not currently healthy.
+
+    Doubles as the startup restore *and* the periodic health watchdog: for each
+    remembered drive it recomputes the per-account mount base, checks health,
+    skips anything already healthy, clears a stale (dead-daemon) mount first,
+    then remounts via ``mount_drive`` from the stored token (no re-auth).
+    Best-effort per drive — a failure is logged and skipped, never raised.
+    Returns the number of drives (re)mounted.
+    """
+    from .graph import Drive
+
+    records = load_mount_records()
+    if not records:
+        return 0
+    mgr = MountManager()
+    if mgr.preferred_backend() is None:
+        log("no mount backend available; skipping auto-remount")
+        return 0
+
+    remounted = 0
+    for rec in records:
+        account_id = rec.get("account_id", "")
+        drive_name = rec.get("drive_name", "")
+        account = registry.get(account_id)
+        if account is None:
+            log(f"skipping {drive_name!r}: account {account_id} is gone")
+            continue
+        base = mount_base_for(account)
+        mountpoint = mgr.mountpoint_for(drive_name, base)
+        health = mgr.mount_health(mountpoint)
+        if health == "active":
+            continue
+        if health == "stale":
+            log(f"clearing stale mount at {mountpoint} (daemon gone)")
+            mgr._lazy_unmount(mountpoint)
+        provider = getattr(account, "provider", "")
+        token_kind = "rclone-gdrive" if provider == "google" else "rclone-onedrive"
+        token = secrets.lookup(account_id, token_kind)
+        if not token:
+            log(f"skipping {drive_name!r}: no saved token (mount it once to reconnect)")
+            continue
+        drive = Drive(id=rec.get("drive_id", ""), name=drive_name,
+                      kind=rec.get("drive_kind", ""), web_url="")
+        try:
+            mgr.mount_drive(provider=provider, drive=drive, token=token, base=base)
+            log(f"remounted {drive_name!r} at {mountpoint}")
+            remounted += 1
+        except Exception as exc:  # noqa: BLE001 - one bad drive must not block others
+            log(f"failed to remount {drive_name!r}: {exc}")
+    return remounted

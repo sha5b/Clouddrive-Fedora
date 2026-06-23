@@ -61,6 +61,12 @@ class CalendarView(Adw.Bin):
         self._events: list = []
         self._has_data = False
         self._query = ""  # agenda search filter
+        # Live "happening now" tracking: a per-minute tick (only while the view is
+        # on screen) re-marks events as they start/end and periodically refetches,
+        # so "Live now" appears without a manual reload.
+        self._live_ids: set = set()
+        self._tick_id = None
+        self._tick_count = 0
 
         # -- right pane: month grid (built first; the loader feeds it) ----
         self._grid = MonthGrid(on_event=self._open_event, on_range=self._on_grid_range)
@@ -101,6 +107,10 @@ class CalendarView(Adw.Bin):
         new_btn = Gtk.Button(
             icon_name="appointment-new-symbolic", tooltip_text=_("New event"))
         new_btn.connect("clicked", self._on_new_event_clicked)
+        meet_btn = Gtk.Button(
+            icon_name="camera-web-symbolic",
+            tooltip_text=_("Meet now — start an instant online meeting"))
+        meet_btn.connect("clicked", self._on_meet_now_clicked)
 
         sidebar_tb = Adw.ToolbarView()
         if self._is_ms:
@@ -108,6 +118,7 @@ class CalendarView(Adw.Bin):
                 show_start_title_buttons=False, show_end_title_buttons=False,
                 title_widget=SourceTabs(self._on_source_changed))
             header.pack_start(new_btn)
+            header.pack_start(meet_btn)
             sidebar_tb.add_top_bar(header)
             bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6,
                           margin_top=6, margin_bottom=6, margin_start=10, margin_end=10)
@@ -123,6 +134,7 @@ class CalendarView(Adw.Bin):
                 show_start_title_buttons=False, show_end_title_buttons=False,
                 title_widget=Gtk.Label(label=_("Agenda")))
             header.pack_start(new_btn)
+            header.pack_start(meet_btn)
             sidebar_tb.add_top_bar(header)
         search_bar = Gtk.Box(margin_top=6, margin_bottom=6,
                             margin_start=10, margin_end=10)
@@ -150,6 +162,41 @@ class CalendarView(Adw.Bin):
 
         self._update_source_ui()
         self._select_context(None)  # load "Me" from cache or the server
+
+        # Only tick while the calendar is actually shown — no wasted timers (or
+        # background refetches) for an account/tab the user isn't looking at.
+        self.connect("map", self._on_map)
+        self.connect("unmap", self._on_unmap)
+
+    # -- live tick (happening-now markers + periodic refetch) ------------
+    def _on_map(self, *_a) -> None:
+        if self._tick_id is None:
+            self._tick_id = GLib.timeout_add_seconds(60, self._tick)
+        self._tick()  # re-mark immediately on (re)appear
+
+    def _on_unmap(self, *_a) -> None:
+        if self._tick_id is not None:
+            GLib.source_remove(self._tick_id)
+            self._tick_id = None
+
+    def _tick(self) -> bool:
+        # Re-mark live events if the "happening now" set changed (an event just
+        # started or ended); a cheap recompute avoids re-rendering every minute.
+        live = {ev.get("id") for ev in self._events if _is_live(ev)}
+        if live != self._live_ids:
+            self._render(self._events)
+        # Every 5 minutes, refetch so server-side additions/changes show up live.
+        self._tick_count += 1
+        if self._tick_count % 5 == 0:
+            self._has_data = False
+            self._load_async()
+        return True  # keep the timer alive (removed on unmap)
+
+    def refresh_live(self) -> None:
+        """Refetch the active source/month. Called by the notifier when its poll
+        spots a new upcoming event, so the calendar updates without a reload."""
+        self._has_data = False
+        self._load_async()
 
     # -- range (the grid's visible month drives what we fetch) -----------
     def _range_iso(self) -> tuple[str, str]:
@@ -180,6 +227,7 @@ class CalendarView(Adw.Bin):
 
     def _render(self, events) -> None:
         self._events = events
+        self._live_ids = {ev.get("id") for ev in events if _is_live(ev)}
         self._grid.set_events(events)
         self._clear()
         if not events:
@@ -535,6 +583,42 @@ class CalendarView(Adw.Bin):
         EventWindow(self._window, on_calendar=on_calendar,
                     create_fn=create).present()
 
+    def _on_meet_now_clicked(self, _btn) -> None:
+        """Create an instant online meeting (now → +30 min) and open its join
+        link in the browser. Teams returns the link immediately; Google Meet may
+        provision it a moment later, so fall back to opening the event detail
+        (where the Join button appears) when the link isn't in the response yet."""
+        if self._is_ms and self._source == "teams":
+            self._window.add_toast(_("Team calendars are read-only here."))
+            return
+        source, address = self._create_context()
+        now = datetime.now(timezone.utc)
+        start_iso = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+        end_iso = (now + timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self._window.add_toast(_("Starting meeting…"))
+
+        def work():
+            from .clients import build_account_client
+
+            client = build_account_client(self._window.get_application(), self._account)
+            return client.create_event(
+                source=source, address=address, subject=_("Meeting"),
+                start_iso=start_iso, end_iso=end_iso, online=True)
+
+        run_async(work, self._on_meet_now_created)
+
+    def _on_meet_now_created(self, result, error) -> bool:
+        if error or not result:
+            self._window.add_toast(_("Couldn't start meeting: %s") % (error or ""))
+            return False
+        self._reload_current()
+        url = _join_url(result)
+        if url:
+            self._window.open_uri(url)
+        elif result.get("id"):
+            self.open_event(result["id"])  # link provisioning; Join shows there
+        return False
+
     def _reload_current(self) -> bool:
         """Force a re-fetch of the active source/month after a write."""
         self._has_data = False
@@ -556,6 +640,18 @@ class CalendarView(Adw.Bin):
                 pass
 
         threading.Thread(target=work, daemon=True).start()
+
+
+def _join_url(event: dict) -> str:
+    """A meeting join link from a raw create_event response — Graph
+    (``onlineMeeting.joinUrl``) or Google (``hangoutLink`` / conference video
+    entry point). Empty when the provider hasn't provisioned one yet."""
+    url = (event.get("onlineMeeting") or {}).get("joinUrl") or event.get("hangoutLink")
+    if not url:
+        for ep in (event.get("conferenceData") or {}).get("entryPoints", []):
+            if ep.get("entryPointType") == "video" and ep.get("uri"):
+                return ep["uri"]
+    return url or ""
 
 
 def _parse_iso(value: str):

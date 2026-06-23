@@ -3,6 +3,7 @@
 """The Adw.Application subclass: actions, lifecycle, and the main window."""
 
 import os
+import threading
 from gettext import gettext as _
 
 from gi.repository import Adw, Gio, GLib, Gtk
@@ -111,6 +112,7 @@ class CloudyApplication(Adw.Application):
         self._add_target_action("notify-open-mail", self._on_notify_open_mail)
         self._add_target_action("notify-open-calendar", self._on_notify_open_calendar)
         self._add_target_action("notify-open-chat", self._on_notify_open_chat)
+        self._add_target_action("notify-join-meeting", self._on_notify_join_meeting)
 
     def _add_target_action(self, name, callback):
         action = Gio.SimpleAction.new(name, GLib.VariantType.new("s"))
@@ -182,8 +184,6 @@ class CloudyApplication(Adw.Application):
         # Ensure rclone is available without any user/system install (rootless
         # download). Best-effort, off the main thread; the shipped Flatpak
         # bundles rclone so this is usually a no-op.
-        import threading
-
         def worker():
             try:
                 from .core.provisioner import (
@@ -221,6 +221,11 @@ class CloudyApplication(Adw.Application):
             self.sync_manager.start()
             self.notifier.start()
             self._log_active_mounts()
+            self._remount_saved_drives(verbose=True)
+            # Health watchdog: re-check remembered mounts periodically so a
+            # crashed rclone daemon reconnects on its own (every 90s; quiet).
+            GLib.timeout_add_seconds(
+                90, lambda: (self._remount_saved_drives(verbose=False), True)[1])
 
     def _log_active_mounts(self) -> None:
         """Print which Cloudy drives are mounted at startup.
@@ -244,6 +249,29 @@ class CloudyApplication(Adw.Application):
                 print("[mounts] no Cloudy drives mounted at startup")
         except Exception as exc:  # noqa: BLE001 - never block startup on logging
             print(f"[mounts] could not enumerate mounts: {exc}")
+
+    def _remount_saved_drives(self, *, verbose: bool) -> None:
+        """Bring back drives the user mounted that aren't currently healthy.
+
+        FUSE mounts are live ``rclone mount`` daemons that die on reboot (and can
+        crash mid-session), so we re-run the mounts the user asked to keep. Used
+        both at startup (``verbose``) and as a periodic watchdog (quiet). Mounting
+        is blocking (rclone subprocesses + a ``ps`` health probe), so it runs on a
+        daemon thread and never stalls the UI.
+        """
+        def worker():
+            try:
+                from .modules.microsoft365.mounts import remount_saved
+
+                log = (lambda m: print(f"[mounts] {m}")) if verbose else (lambda _m: None)
+                n = remount_saved(self.registry, self.secrets, log=log)
+                if n:  # always report an actual (re)mount, even when quiet
+                    print(f"[mounts] auto-(re)mounted {n} drive(s)")
+            except Exception as exc:  # noqa: BLE001 - never block on the watchdog
+                if verbose:
+                    print(f"[mounts] auto-remount failed: {exc}")
+
+        threading.Thread(target=worker, daemon=True).start()
 
     # -- run in background ------------------------------------------------
     def wants_background(self) -> bool:
@@ -328,6 +356,13 @@ class CloudyApplication(Adw.Application):
             else:
                 window.open_account_tab(account, "calendar")
         window.present()
+
+    def _on_notify_join_meeting(self, _action, param):
+        """The "Join" button on a meeting-start notification: open the meeting's
+        join URL in the browser (no need to raise the app window)."""
+        uri = param.get_string()
+        if uri:
+            Gio.AppInfo.launch_default_for_uri(uri, None)
 
     def _on_notify_open_chat(self, _action, param):
         self.activate()

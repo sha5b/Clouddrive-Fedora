@@ -5,987 +5,235 @@ SPDX-FileCopyrightText: 2026 Shahab Nedaei
 
 # Cloudy — Handoff / Continue Here
 
-Cloudy is a **GTK4 / Libadwaita (Python /
-PyGObject)** super-app for **Microsoft 365 (OneDrive + Teams/SharePoint, Mail,
-Calendar)** and **Google (Gmail, Calendar, Drive)** on Fedora 44 (GNOME 50). It
-orchestrates proven backends (rclone for mounts; Microsoft Graph / Google REST
-for mail/calendar) rather than reimplementing them. Read `docs/ARCHITECTURE.md`,
-`docs/AUTH.md`, `docs/SECRETS.md`, `docs/ROADMAP.md` for depth.
+Cloudy is a **GTK4 / Libadwaita (Python / PyGObject)** super-app for **Microsoft 365 (OneDrive + Teams/SharePoint, Mail, Calendar)** and **Google (Gmail, Calendar, Drive)** on Fedora 44 (GNOME 50). It orchestrates proven backends (rclone for mounts; Microsoft Graph / Google REST for mail/calendar) rather than reimplementing them. Read `docs/ARCHITECTURE.md`, `docs/AUTH.md`, `docs/SECRETS.md`, `docs/ROADMAP.md` for depth.
 
-## 0.2.4 released: RSVP + Activity feed (2026-06-18)
+## Current status (v0.2.5, 2026-06-18+ baseline)
 
-**v0.2.4**: calendar RSVP now works for Microsoft
-*and* Google (Google gained `respond_event`, which patches your attendee status —
-calendar is writable, the old `can_respond=False` was just unimplemented);
-unanswered invites render dimmed-but-clickable in the agenda/grid
-(`responseStatus` is now in the list query). Meeting-invite **emails** show
-Accept/Tentative/Decline that send a standards `METHOD:REPLY` iMIP via the new
-`core/ics.py` (parser + reply builder). New **Activity** tab (`widgets/
-activity_view.py`) — first tab, default-selected — aggregates recent mail +
-upcoming/unanswered invites + recent chats; for Microsoft it adds Teams-style
-"reacted to your message" / "mentioned you" from `GraphClient.recent_chat_
-activity()` (bounded scan of the 8 most-recent chats). Image viewer
-(`media_window.py`) gained scroll-zoom + drag-pan; multi-image chat messages lay
-out as an `Adw.WrapBox` gallery. Mail composer has an `isReadReceiptRequested`
-toggle (Microsoft only). Local Flatpak reinstalled from the bundle (running app
-== release). **Verified**: build + `make test` (5/5) + headless smoke/unit tests.
-Not yet GUI-verified.
+Working and shipped (RPM + Flatpak; `make release` reinstalls the user Flatpak so the running app == release):
+- **Sign-in** (Microsoft via MSAL, Google via loopback+PKCE), tokens in libsecret.
+- **Files** = rclone FUSE mounts: OneDrive + Teams libraries (MS) and My Drive + Shared with me + Shared Drives (Google), with Mount↔Unmount, an in-app `Adw.NavigationView` browser, and `recent_changes` (bounded scan) feeding the Dashboard.
+- **Mail** with Me/Teams/Shared sources, shared-mailbox add, pagination, Unread virtual folder, per-account folder memory, multi-select + arrow-nav + delete, search, CC/BCC, read-receipt request (MS), inline re-sign-in on scope errors, pop-out message window.
+- **Calendar** with Me/Teams/Shared sources, month grid + agenda, past events, RSVP for **both** MS and Google, "Live now" marker, multi-select/search/delete, meeting-invite email Accept/Tentative/Decline (iMIP `METHOD:REPLY` via `core/ics.py`). Google now aggregates every selected/secondary calendar.
+- **Chat** (MS Teams chats; Google Chat Workspace-only) and **Teams** (channels + OneNote) capabilities, work/school MS only — hidden for personal accounts.
+- **Activity** tab (first/default): aggregates recent mail + upcoming/unanswered invites + recent chats + Teams reacted/mentioned.
+- **Dashboard** (Pinned / Upcoming / Recent mail / Recent file changes, + Activity feed for work MS accounts), **Command palette** (Ctrl+K), **persistent offline cache**, **notifications** with DND/quiet-hours/relevance-tiers/per-source mute/digest batching, Nautilus D-Bus emblems + extension, secrets, rclone auto-provision.
+- 0.2.4 added RSVP + Activity; 0.2.5 added fuller mail headers, pop-out message window, accurate chat presence.
 
-### Read receipts — the standing limitation
-Neither Graph nor Google exposes whether *another* person read your **chat**
-message; it's a private Teams feature. The chat status glyph stays Sent/Sending
-(see `_status_glyph` in `chat_view.py`). **Email** is the only place a read
-receipt is possible — implemented via Graph `isReadReceiptRequested`, gated to
-Microsoft accounts in the composer.
+**Verification convention** (applies to nearly every change below): GUI cannot be driven from a headless/agent shell (Wayland handoff kills the wrapper shell, exit 144). So changes are verified by `make build` + `make test` (4–5 meson validators + the `tests/unit/` logic suite, 69 tests) + `make lint` (py_compile) + a **headless import/instantiate smoke test** (`gi.require_version` then import/instantiate each widget module — `window.py`/`application.py` can't be imported standalone, their `Gtk.Template` needs the compiled gresource), then the user runs `make run`/`make flatpak-run` to eyeball. "Not yet eyeballed" boilerplate is omitted per-entry below.
 
-### What was actually wrong (and fixed) in the chat avatars/presence
-- **Flat avatars never applied** — the killer detail: `Adw.Avatar`'s coloured
-  background lives on an **internal child gizmo** whose CSS node is `avatar` (and
-  carries `.color1–.color14`), *not* on the `Adw.Avatar` widget we hold (node
-  `widget`). So the old `avatar.cloudy-avatar-flat` selector matched nothing. Fix:
-  reach the inner node as a descendant — `.cloudy-avatar-flat.cloudy-avatar-flat
-  avatar { … }`. Confirm with a widget-tree walk: `Avatar(widget) → AdwGizmo
-  (avatar, .colorN) → Label/Image`.
-- **Flat per-person colours** — the user then wanted distinct *flat* colours (not
-  the uniform grey, not Adwaita's gloss). `_avatar` adds `cloudy-avatar-c{0..7}`
-  by a stable byte-sum hash of the contact name (`_avatar_color_index`); palette
-  is `.cloudy-avatar-cN avatar` in `style.css` (solid fills, white initials).
-- **Presence dot appeared then vanished** — two presence fetches (`_refresh_
-  presence` list batch + `_on_members` per-chat fetch ~1s after open); the second
-  often returned `PresenceUnknown`/`""` and `_on_presence` did a blind
-  `dict.update`, erasing a freshly-resolved status. Fix: merge **without
-  downgrading** a known availability to blank/unknown. The dot is now **CSS-drawn**
-  (a sized `Gtk.Box` with `.cloudy-presence`/`-{state}`), not a `media-record-
-  symbolic` icon, so it can't go missing in a runtime theme; `Offline`/unknown now
-  shows a grey dot so a fetched 1:1 always shows *something*.
-- Diagnostic `print("[presence] …")` lines were added during debugging and
-  **removed** before release — don't reintroduce them.
+---
 
-### CI
-- `.github/workflows/release.yml` bumped `actions/checkout@v4 → v6` and
-  `softprops/action-gh-release@v2 → v3` (Node 20 → 24 deprecation). Triggers
-  unchanged: push a `v*` tag (or workflow_dispatch with an existing tag).
-- **Release recipe:** `gh release create vX.Y.Z --target main --notes-file
-  <changelog-section>` creates the tag (→ triggers the build) *and* sets the
-  notes. `action-gh-release` preserves an existing body, so set notes at create
-  time. Locally, `make release` builds RPM + Flatpak bundle and reinstalls the
-  bundle so the running app matches.
+## Standing gotchas & known limitations
 
-## Chat/Teams/OneNote rework (2026-06-17)
+### Architecture / conventions
+- **Use `source_nav.run_async(work, on_done)`** for all off-thread work, never raw `threading.Thread`+`GLib.idle_add`; callback signature is `(result, error)`, capture extra ids via lambda (`lambda res, err: self._on_x(id, res, err)`).
+- **Pango markup**: Adw row/title/StatusPage text is parsed as markup — wrap dynamic text with `widgets/format.esc()`. Mail/agenda lists use plain `Gtk.Label` (immune).
+- **Graph query URLs**: encode values with spaces (e.g. `$orderby=... desc`) or urllib aborts ("URL can't contain control characters").
+- **GSettings**: `Gio.Settings.new()` *aborts the process* if the schema isn't installed — look up via `SettingsSchemaSource` first (see `mounts._setting`). New schema keys need `make build` (recompiles + reinstalls schema).
+- **New scopes force re-consent**: existing accounts must Sign Out → Sign In to pick up added scopes; Mail/Calendar surface this with an inline **Re-sign in** button on scope errors (`is_scope_error`).
+- **`Account.from_dict`** tolerates missing keys (adding fields safe; removing drops on next save). New fields must be added to the `from_dict` allowlist or they silently drop (this bit `muted_sources`). Extra fields: `full_sync`, `mount_location`, `shared_mailboxes`, `pinned_sources`, `muted_sources`.
+- **Network-mount scans are dangerous**: `os.walk` over a FUSE mount can stall / trigger downloads. Keep scanning bounded (`recent_changes` `max_scan`).
+- **Module on/off is per-provider**: the Accounts on/off switch toggles the whole `module_id` (`enabled-modules`), shared by all accounts of a provider.
+- **Single-instance app**: quit the running instance before relaunching (a new launch hands off and exits 0) — also required for CSS to reload.
+- **meson install doesn't prune**: `make install` removes the installed package tree first so renamed/removed modules don't linger as phantom providers.
+- **Smoke-test by INSTANTIATING widgets**, not just importing (`Gtk.init_check()` works headless here; a `monthdatescal` typo once passed import but crashed `MonthGrid()`).
+- **Windows must be non-transient** (no `transient_for`) for GNOME to show minimize/maximize. Editor surfaces are non-modal `Adw.Window`s (`EditorWindow`), never modal `Adw.Dialog`.
+- **GTK4 CSS has no `!important`** (errors "junk at end of value" — that's why early flat-avatar attempts silently failed); use plain longhand at `PRIORITY_APPLICATION`.
+- **`make release` installs the bundle**; other flatpak builds need `make flatpak-test` to update the *running* app (stale-build confusion looks like the fix didn't work).
 
-**Where we stopped.** Reworked the Chat surface and hardened Teams/OneNote per a
-bug-sweep request. All green (`make build` + 5 meson tests) and verified
-headlessly (module imports + the new Graph reply-parse helpers). **Not yet
-eyeballed — `make run`** and check Chat (avatars, replies, live list, image
-send-scroll) and a large OneNote page.
+### Avatars / presence (final, correct version — supersedes earlier attempts)
+- `Adw.Avatar`'s coloured background lives on an **internal child gizmo** whose CSS node is `avatar` (carries `.color1–.color14`), *not* on the `Adw.Avatar` widget (node `widget`). So a `avatar.cloudy-avatar-flat` selector matches nothing — reach the inner node as a descendant: `.cloudy-avatar-flat.cloudy-avatar-flat avatar { … }`. Widget tree: `Avatar(widget) → AdwGizmo(avatar, .colorN) → Label/Image`.
+- Flat **per-person** palette: `_avatar` adds `cloudy-avatar-c{0..7}` by a stable byte-sum hash of the contact name (`_avatar_color_index`); palette `.cloudy-avatar-cN avatar` in `style.css` (solid fills, white initials).
+- **Presence dot** is **CSS-drawn** (a sized `Gtk.Box` with `.cloudy-presence`/`-{state}`), not a `media-record-symbolic` icon, so it can't go missing under a runtime theme; Offline/unknown shows a grey dot. `_on_presence` merges **without downgrading** a known availability to blank/unknown (the second per-chat fetch often returns `PresenceUnknown` and a blind `dict.update` erased a freshly-resolved status). Don't reintroduce the removed `print("[presence] …")` diagnostics.
 
-### Chat (`widgets/chat_view.py`, `data/style.css`)
-- **Flat avatars.** `_avatar` adds the `cloudy-avatar-flat` style class; CSS
-  overrides `Adw.Avatar`'s per-name rainbow (`.color1–.color14`).
-  **Superseded — see the top section:** the selector had to target the inner
-  gizmo node (`.cloudy-avatar-flat … avatar`), and avatars now use a flat
-  *per-person* palette (`cloudy-avatar-c0…c7`), not one accent fill.
-- **Live chat list.** New `ChatView.refresh_live()` re-fetches the chat list so a
-  new message bumps its conversation to the top (and lights its unread mark)
-  without a manual refresh — mirrors Mail. Wired: `notifications._on_chat` →
-  `window.refresh_account_chat` → `view.refresh_live()` (only for the shown
-  account; skipped while a search is active). The open thread keeps its own 5/30s
-  adaptive poll. `_render_filtered` now re-selects the open chat after a live
-  re-render.
-- **Reply quotes.** Graph now parses Teams `messageReference` attachments into a
-  `reply_to` dict (see below) instead of a bare "attachment" chip. `_bubble`
-  renders a clickable quote (accent bar + author + snippet) above the body;
-  clicking it calls `_scroll_to_message(id)` which scrolls to and flashes the
-  original (or toasts "scroll up to load older" if it isn't loaded). Styles:
-  `.cloudy-reply-quote` / `.cloudy-reply-bar` / `.cloudy-bubble-flash`.
-- **Immediate scroll on send.** Optimistic echo now covers *every* send (was
-  plain-text only): `_render_pending(chat_id, text, images)` renders attached
-  images straight from memory via `_local_image_widget` (no fetch round-trip), so
-  an image/rich send appears and scrolls to the bottom instantly instead of after
-  the ~1.5s reconcile poll.
-- **Image decode is memory-safe.** `_thumb_texture` (chat) and
-  `_texture_from_bytes` (teams) now downscale *during* decode via the loader's
-  `size-prepared` signal, so a huge source image (a OneNote scan, a high-res
-  paste) is never fully decoded into memory — fixes OOM/renderer crashes on big
-  images. Both raise `ValueError` on an undecodable payload (callers already
-  catch).
+### Read receipts — standing limitation
+Neither Graph nor Google exposes whether *another* person read your **chat** message (it's a private Teams feature); the chat status glyph stays Sent/Sending (`_status_glyph`/`_apply_status` shows ONE glyph on my most-recent message: clock→check, **no "Seen"/eye**). **Email** is the only place a read receipt is possible — implemented via Graph `isReadReceiptRequested`, gated to Microsoft accounts in the composer.
 
-### Graph (`modules/microsoft365/graph.py`)
-- `_strip_reply_placeholder` drops the `<attachment id=…>` placeholder Teams
-  leaves where the quoted message goes. `_parse_message_reference` turns a
-  `messageReference` attachment's JSON (`messageId`/`messagePreview`/sender) into
-  `{id, text, from}`. `_split_attachments` pulls the reply quote out of the
-  attachment list. Both `_chat_message_row` and `_channel_message_row` now return
-  a `reply_to` field and a cleaned body.
+### ChatView teardown (accepted minor leak)
+A first attempt stopped poll/presence timers on `unrealize`, but `Adw.ViewStack` unrealizes the hidden Chat page on tab switch, so it killed presence dots permanently. Reverted. Timers self-cancel via `get_root() is None`, so the orphan-timer leak is minor and accepted; a targeted teardown (only on real account removal) is the proper future fix.
 
-### Teams (`widgets/teams_view.py`)
-- `_message_block` renders the same reply quote (`_reply_quote`) for channel
-  posts/replies, so a quoted channel reply shows its text instead of "attachment".
+---
 
-### Cross-tab bug sweep (same session)
-Fixed alongside the chat rework after a per-tab review:
-- **Mail:** `message_view.make_message_page` now escapes the NavigationPage title
-  (subjects with `&`/`<` no longer blank it); `mail_view._populate_folders` /
-  `_on_folder_changed` use `.get("id")` instead of hard subscripts (a folder
-  missing `id` no longer `KeyError`s).
-- **Calendar:** `_delete_selected` uses `r._ev.get("id")` (was `r._ev["id"]`
-  inside the filter — `KeyError` on an id-less event); `_on_groups_loaded` does
-  `"Group.Read" in str(error)` (was `in error` → `TypeError` on a non-string
-  error); `event_window._on_loaded` escapes the `StatusPage` description.
-- **Files:** `file_browser._show_status` escapes `StatusPage` title/description;
-  the right-click `Popover` is `unparent()`-ed on `closed` (was leaking one per
-  right-click); imported `format.esc`.
-- **Command palette:** Down/Tab and Up/Shift+Tab now wrap around (Tab no longer
-  dead-ends on the last row).
-- **Styling:** added the `.cloudy-bubble-image` rule (rounded corners on inline
-  chat/channel/OneNote thumbnails — was referenced but undefined).
+## Already investigated — NOT implementable (don't redo)
+- **Google Chat for personal accounts**: the Chat *product* exists for consumer Gmail but the Chat *REST API* requires a Business/Enterprise Workspace account. Hiding the Chat tab for personal Google accounts (`window.py` `is_personal` filter) is correct. Nothing to build.
+- **Delegated/shared Gmail mailboxes**: Gmail has no end-user delegated-mailbox REST access (needs domain-wide delegation via a service account + admin) — impossible for a desktop OAuth app.
+- **Accessing your *own* address as a "shared" source** returns Graph 403 ErrorAccessDenied — expected; use the **Me** source.
+- **Not feasible for a delegated desktop client** (don't promise): typing indicators, chat read receipts, true push (we poll), threaded chat replies. (Mute/pin/hide chat *were* later built; the no-promise note predates that.)
+- **`meetingMessageType`** can't be `$select`ed or entity-cast on the messages endpoint (both 400) — the "X accepted" card was dropped; empty meeting-response emails fall back to a "No message content" placeholder.
 
-### Full audit + cleanup pass (same session)
-A four-angle review (performance / lifecycle-leaks / backend-clients / code-quality)
-was run. Fixed now (safe, verified, all green):
-- **Flat avatars actually work now.** GTK4 CSS has no `!important` (it errors
-  "junk at end of value" — that's why the first attempts silently failed). The
-  rule is plain longhand at `PRIORITY_APPLICATION`. Also: this is a single-instance
-  app, so a still-running instance must be quit for CSS to reload.
-- **Dead code removed:** `message_view.make_message_page`, `chat_view._initials` +
-  `_QUICK_REACTIONS`, `RichTextEditor.is_empty`, `graph.site_by_path`,
-  `send_chat_image`/`unset_reaction` (graph + google_client), `window._account_menu_button`,
-  `interfaces.CAPABILITY_KEYS`, `dashboard._pretty_day` (dup), `mounts.authorize_onedrive`/
-  `create_onedrive_remote`. (`Account.is_business` was *kept* — it's covered by the
-  unit suite.)
-- **ChatView teardown was reverted.** A first attempt stopped the poll/presence
-  timers on `unrealize`, but `Adw.ViewStack` unrealizes the hidden Chat page on
-  tab switch, so it killed presence dots permanently (timer never restarted).
-  The timers already self-cancel via their `get_root() is None` checks, so the
-  orphan-timer leak is minor and accepted; a targeted teardown (only on real
-  account removal) is the proper future fix.
-- **Popover leaks:** chat emoji + members popovers and the rich-editor link
-  popover now `unparent()` on `closed`.
-- **Dashboard:** mail and calendar fetches are now separate try-blocks that log
-  the failure, so one provider's scope error no longer silently blanks the whole
-  account's overview.
+---
 
-### Biggest remaining wins — NOT done (architectural; need GUI/live-API testing, get sign-off)
-1. **Auth/client is rebuilt on every request** (`widgets/clients.py` →
-   `core/auth/msal_graph.py`): each `build_account_client` does a synchronous
-   libsecret lookup + deserializes the MSAL cache + builds a new
-   `PublicClientApplication`, and `_me_id`/`_tenant_id` caches (instance-level)
-   are thrown away — so chat polling/presence re-auth-setup every few seconds and
-   issue an extra `/me` per op. **Fix:** memoize one auth object per `account.id`
-   on the app (MSAL is designed to be reused), invalidate on sign-in/out. Highest
-   single perf win; touches auth, so test sign-in after.
-2. **Lazy view construction** (`window._show_account`): every account switch
-   eagerly builds ALL five tab views and fires ~6 concurrent network loads even
-   though one tab is visible. Build the visible/remembered tab eagerly, the rest
-   on first `notify::visible-child-name`.
-3. **Gmail inbox is a serial N+1** (`google_client.list_messages_page`): one
-   blocking GET per message. Parallelize with a ThreadPoolExecutor (pattern
-   already in `list_events`) or use the Gmail batch endpoint.
-4. **Image decode on the main thread** in chat/teams `done()` callbacks and
-   `message_view.html_body_widget` (inline-image shrink+re-encode) — move the
-   decode into the worker thread.
-5. **Shared-helper dedup**: one image `texture_from_bytes` (4 copies:
-   media_window/rich_editor/teams_view/chat_view), one `_attachment_chip` (2),
-   one `_reply_quote` (2). Extract to a shared module.
-6. **Live re-render churn:** `chat_view._render_filtered` / `mail_view._render`
-   rebuild the whole ListBox on every notifier tick — diff/patch rows instead.
-7. **Mail `refresh_live` collapses pagination**; **Files** nav race + unbounded
-   FUSE-folder render.
+## Biggest remaining wins — NOT done (architectural; need GUI/live-API testing, get sign-off)
+1. **Auth/client rebuilt on every request** (`widgets/clients.py` → `core/auth/msal_graph.py`): each `build_account_client` does a synchronous libsecret lookup + deserializes the MSAL cache + builds a new `PublicClientApplication`, and `_me_id`/`_tenant_id` instance caches are thrown away — so chat polling/presence re-auth-setup every few seconds and issue an extra `/me` per op. **Fix:** memoize one auth object per `account.id` on the app (MSAL is designed to be reused), invalidate on sign-in/out. Highest single perf win; touches auth, so test sign-in after.
+2. **Lazy view construction** (`window._show_account`): every account switch eagerly builds ALL five tab views and fires ~6 concurrent network loads though one tab is visible. Build the visible/remembered tab eagerly, the rest on first `notify::visible-child-name`.
+3. **Gmail inbox is a serial N+1** (`google_client.list_messages_page`): one blocking GET per message. Parallelize with a ThreadPoolExecutor (pattern in `list_events`) or use the Gmail batch endpoint.
+4. **Image decode on the main thread** in chat/teams `done()` callbacks and `message_view.html_body_widget` (inline-image shrink+re-encode) — move decode into the worker thread.
+5. **Shared-helper dedup**: one image `texture_from_bytes` (4 copies: media_window/rich_editor/teams_view/chat_view), one `_attachment_chip` (2), one `_reply_quote` (2) — extract to a shared module.
+6. **Live re-render churn**: `chat_view._render_filtered` / `mail_view._render` rebuild the whole ListBox on every notifier tick — diff/patch rows instead.
+7. **Mail `refresh_live` collapses pagination**; **Files** nav race + unbounded FUSE-folder render (see below).
 
-### Known, deliberately NOT fixed here (need live-API verification)
-- **Calendar times may display in UTC, not local.** `_time_label` /
-  `month_grid._chip` / `event_view._format_when` slice the raw ISO `start`
-  (`[:5]`); Graph `calendarView` is fetched without a `Prefer: outlook.timezone`
-  header and ignores the per-event `start.timeZone`, so non-UTC users can see a
-  shifted wall-clock. Also `_format_when` shows no end-date for multi-day/all-day
-  spans. This is a deep, cross-provider (MS + Google) change that must be tested
-  against the live API before touching — flagged, not changed.
-- **Mail `refresh_live` collapses pagination.** A live refresh re-renders only
-  page 1, discarding already-loaded "Load older" pages and resetting scroll.
-- **Files `_load`/`_toggle_expand` last-write-wins race** on rapid navigation
-  (no nav-token guard); `_scan` over a FUSE mount is unbounded for huge folders.
+---
 
-## Command palette + offline cache (2026-06-16)
+## Known, deliberately NOT fixed (need live-API verification)
+- **Calendar times may display in UTC, not local.** `_time_label` / `month_grid._chip` / `event_view._format_when` slice the raw ISO `start` (`[:5]`); Graph `calendarView` is fetched without a `Prefer: outlook.timezone` header and ignores per-event `start.timeZone`, so non-UTC users can see a shifted wall-clock. `_format_when` also shows no end-date for multi-day/all-day spans. Deep cross-provider (MS + Google) change — must be tested against the live API before touching.
+- **Mail `refresh_live` collapses pagination**: a live refresh re-renders only page 1, discarding loaded "Load older" pages and resetting scroll.
+- **Files `_load`/`_toggle_expand` last-write-wins race** on rapid navigation (no nav-token guard); `_scan` over a FUSE mount is unbounded for huge folders.
+- **Google Shared Drives UNTESTED on a real Workspace account** (user has only personal Google): `MountManager.list_google_shared_drives` spins a throwaway rclone `drive` remote and parses `rclone backend drives` JSON — the JSON shape + Shared Drives path need a Workspace account to confirm. Shared-with-me is testable on personal. Shared Drives only appear *after* the user has mounted something once (an rclone token must already exist; the app holds no Google Drive OAuth scope).
 
-**Where we stopped.** Added a keyboard-first command palette and a persistent
-offline cache, then wrapped up the session. All green (`make build` + 4 meson
-tests + `make lint`) and verified headlessly (cache persist/stale-reload/skip
-round-trip; palette + cache imports). **Not yet eyeballed — `make flatpak-run`**
-and press **Ctrl+K**; relaunch offline to confirm mail/agenda still render.
+---
 
-### Command palette (`widgets/command_palette.py`, `application.py`)
-- `Adw.Dialog` opened by the `command-palette` app action (accel **Ctrl+K**).
-  Lists every signed-in + enabled account's visible capability surfaces
-  (Files/Mail/Calendar/Chat/Teams, with the `is_personal` Chat/Teams filter) plus
-  app actions (Preferences, Add account). Type to filter (all-words match), ↑/↓
-  (and Tab) move, Enter activates the selection, Esc dismisses. Routes through the
-  existing `window.open_account_tab` / `app.activate_action`.
-- Imports `CAPABILITY_UI` from `window` *inside* `_build_entries` (not at module
-  top) so the module stays importable in headless smoke tests (window needs the
-  compiled gresource).
+## Deferred follow-ups (scoped, asked-for, not yet built)
+- **Conversation threading** in Mail: the list is a flat `ListBox` entangled with pagination, optimistic send-reconcile, unread filter, multi-select and search; grouping by Graph `conversationId` / Gmail `threadId` is a few-hundred-line rewrite + client shape changes. Own focused pass.
+- **Send outbox** (queue/retry sends offline): pairs with the offline cache but a separate non-trivial surface.
+- **Google Tasks**: net-*new* (Microsoft To Do isn't in the app either), not parity — candidate for a future shared Tasks capability.
+- **Free/busy `getSchedule`, week/day calendar views, unified cross-account inbox/agenda.**
+- **Arbitrary file attachments** in chat (non-image PDFs/docs): OneDrive upload then reference as a `reference` attachment.
+- **Forward into an existing chat** (chat picker) — today Forward opens a *new* chat prefilled.
+- **Google Chat write ops** (image send, edit, reactions, member list, message search) are stubbed (`GoogleError`/`[]`) — needs Workspace media-upload + APIs.
+- **Streaming sync activation**: when sync type = `stream`, auto-mount the account's libraries at startup (today disabled; only `full` bisync wired).
+- **Live transfer status**: mount rclone with `--rc`, poll `core/stats` for ↓/↑, feed the D-Bus service so Nautilus shows transferring/online — also a better source for Dashboard "Recent file changes" than walking the mount.
+- **Multi-account-per-module**: the Accounts on/off switch toggles the whole module; if multiple same-provider accounts become common, add a real per-account `enabled` flag.
+- **Notifications P2** (from the CSCW/HCI research backlog): **Meeting auto-focus** (derive in-meeting state from the user's own calendar, auto-suppress tier-2 — coarse only, never expose meeting titles; gate behind a setting, keep items recoverable via badges since misfires silently swallow notifications); **Dashboard catch-up** ("since you were away" unread markers + per-channel unread counts — NOTE: cheap per-channel unread isn't available from Graph; chats half feasible, channels need a workaround). #6 "appear offline / invisible" deliberately dropped per the user. Research flagged no direct evidence on threading-vs-linear or grounding/search — separate pass.
+- **OneNote edit fidelity (v1 limitation)**: editing an existing page seeds the rich-text editor from **plain text**, so existing formatting is lost on save (new pages are full fidelity).
+- **Contacts dropdown** only suggests after Sign Out → Sign In per account (grants `People.Read` / `contacts.other.readonly`). If still missing after re-consent, `GtkEntryCompletion` is deprecated/flaky in GTK4 — replace `compose_view._setup_completion` with a custom suggestion popover.
 
-### Persistent offline cache (`core/cache.py`, `application.py`)
-- `MemoryCache(ttl, path=…)` now persists JSON-serializable entries to
-  `~/.cache/cloudy/cache.json` (atomic write, throttled to ~5s, plus a
-  `flush()` in `do_shutdown`). Non-serializable values (e.g. Files libraries
-  holding `Drive` objects) are skipped — kept in memory only.
-- Entries loaded from disk are **backdated past the TTL** so they read as *stale*:
-  views show last-known mail/agenda/chat instantly (offline), then revalidate via
-  the normal stale-while-revalidate path. No view changes needed.
+---
 
-### Headless logic test suite (`tests/unit/`, wired into `make test`)
-- 69 `unittest` tests over the pure/logic layer — **no GUI, no network**: cache
-  (TTL/invalidate/persist/stale-reload/skip-non-serializable), Account
-  dict-roundtrip + personal/business, pin/mute/scope helpers, GoogleClient
-  normalization + multi-calendar aggregation/id-routing, Graph `_split_id`/
-  `_message_scope`/event-normalization, notifier gating + quiet-hours wrap +
-  digest enqueue/flush/build, mount `_safe_name`/`drive_type_for`/shared-drive
-  degradation, `capabilities_of`, `esc`.
-- Run via `make test` (meson test 4/5, ~0.3s) or `make test-unit` (fast, no build).
-  GUI widgets aren't covered — they need the gresource/display; this is the
-  business logic. `tests/unit/gi_setup.py` pins GI versions, `fakes.py` provides
-  FakeApp/FakeSettings/FakeRegistry/FakeWindow.
+## Open bug backlog (from the full-app audit — triaged, NOT yet fixed)
 
-### Deferred by judgment (too big for a wrap-up — clearly scoped follow-ups)
-- **Conversation threading** in Mail: the list is a flat `ListBox` entangled with
-  pagination, optimistic send-reconcile, unread filter, multi-select and search;
-  grouping by Graph `conversationId` / Gmail `threadId` is a few-hundred-line
-  rewrite + client shape changes. Do as its own focused pass.
-- **Send outbox** (queue/retry sends offline): pairs with the offline cache but is
-  a separate, non-trivial surface.
-- **Google Calendar RSVP** (`can_respond` still False), free/busy `getSchedule`,
-  week/day calendar views, unified cross-account inbox/agenda, Tasks. See the
-  ROADMAP "still to do" + the earlier P2 notes below.
-
-## Google feature parity: multi-calendar + Drive sources (2026-06-16)
-
-**Where we stopped.** Closed the implementable Google-vs-Microsoft gaps. All green
-(`make build` + 4 meson tests + `make lint`) and verified headlessly (calendar
-aggregation/id-routing with a faked HTTP layer, view/module imports, shared-drive
-enumeration degrades to `[]` without a token). **Not yet eyeballed — ask the user
-to `make flatpak-run`** with a personal Google account: the agenda should now show
-birthdays/holidays/secondary calendars, and Files should list *My Drive* +
-*Shared with me*.
-
-### What was investigated first (don't redo)
-A `deep-research`-style check confirmed two gaps are **not implementable** and were
-deliberately skipped:
-- **Google Chat for personal accounts** — the Chat *product* exists for consumer
-  Gmail, but the Chat *REST API* requires a Business/Enterprise Workspace account
-  (docs: "A Business or Enterprise Google Workspace account with access to Google
-  Chat"). So hiding the Chat tab for personal Google accounts
-  (`window.py` `is_personal` filter) is correct. Nothing to build.
-- **Delegated/shared Gmail mailboxes** — Gmail has no end-user delegated-mailbox
-  REST access (needs domain-wide delegation via a service account + admin),
-  impossible for a desktop OAuth app. Skipped.
-- **Google Tasks** — deferred: it's net-*new* (Microsoft To Do isn't in the app
-  either), not parity. A candidate for a future shared Tasks capability.
-
-### Google multi-calendar (`modules/gmail/google_client.py`, `widgets/calendar_view.py`)
-- `list_events` now **aggregates every shown calendar** (calendarList where
-  `selected` or `primary`) in parallel (`ThreadPoolExecutor`, ≤8), not just
-  `primary` — matching what the user sees in Google Calendar. One bad calendar
-  returns `[]` and never sinks the agenda.
-- **Id routing** mirrors Graph's `group:`/`shared:` trick: non-primary event ids
-  are wrapped `gcal\x1f<calendarId>\x1f<eventId>` (`_wrap_event_id` /
-  `_unwrap_event_id`); `get_event`/`update_event`/`delete_event` parse it and hit
-  `/calendars/<calId>/events/<id>` (calId URL-encoded via `_cal_path`). Read-only
-  calendars (holidays/birthdays) return a Google 403 → surfaced as a toast.
-- Each event carries `calendar` (name) + `color`; the agenda row shows the
-  calendar name as its subtitle when there's no location. Create still targets
-  `primary` (the New-event "me" context). RSVP still off for Google
-  (`can_respond=False`) — a separate follow-up.
-
-### Google Drive sources (`widgets/files_view.py`, `modules/microsoft365/mounts.py`)
-- Files now lists **My Drive** + **Shared with me** (always) and **Shared Drives**
-  (Workspace Team Drives) for Google, like OneDrive + Team libraries on the MS
-  side. `_load_google_libraries` renders the first two instantly, then enumerates
-  Shared Drives off-thread.
-- The app holds **no Google Drive OAuth scope** (Drive is mounted entirely via
-  rclone's own auth), so Shared Drives are enumerated through rclone:
-  `MountManager.list_google_shared_drives(token)` spins up a throwaway `drive`
-  remote, runs `rclone backend drives`, parses JSON, drops the remote — best-effort,
-  `[]` on any failure or missing token. So Shared Drives only appear **after** the
-  user has mounted something once (an rclone token then exists).
-- Mount opts branch on `drive.kind`: `google_shared_with_me` adds
-  `shared_with_me=true`; `google_shared_drive` adds `team_drive=<id>`.
-- **UNTESTED on a real Workspace account** (the user only has personal Google).
-  Shared-with-me is testable on personal; Shared Drives + the rclone `backend
-  drives` JSON shape need a Workspace account to confirm.
-
-## P2 #1 notification batching/digest (2026-06-16)
-
-**Where we stopped.** Implemented the first P2 item: batched (digest) notifications.
-Also (earlier this session) split notification settings onto their own
-**Notifications** Preferences tab and refined several setting subtitles. All green
-(`make build` + `make install` + 4 meson tests + `make lint`) and verified
-headlessly (digest enqueue/flush/focus-hold + plural wording, 3-tab Preferences
-against the installed schema). **Not yet eyeballed in the GUI — ask the user to
-`make flatpak-run`** and try the *Direct now, routine in a summary* level.
-
-### Digest batching (`core/notifications.py`, `preferences.py`, schema, `application.py`)
-- **New `notify-level` value `digest`** (now `all` | `digest` | `priority`).
-  `all` = everything immediate; `digest` = tier-1 immediate + tier-2 batched;
-  `priority` = tier-1 only, tier-2 silent-to-badge. `_allowed(tier)` now holds
-  tier-2 at *any* level other than `all`; `_digest_active()` is true only at
-  `digest`.
-- **Per-account pending buffer** `self._digest` (account id → `{name, chats:{id:name},
-  msgs, mail}`). `_on_chat`/`_on_mail` enqueue tier-2 items (`_enqueue_chat`/
-  `_enqueue_mail`) instead of firing. Mail counts **all** routine mail for the
-  digest but still caps live tier-1 banners at `_MAX_MAIL_PER_TICK`.
-- **`_flush_digest` on a `_DIGEST_SECONDS` (600s) timer.** Builds one LOW-priority
-  summary per account ("3 new messages in 2 chats · 2 new emails", `ngettext`
-  plurals) and clears the buffer. **Holds the queue while `_focus_active()`** (DND
-  / quiet hours) and releases once focus clears — nothing dropped.
-- **Digest routing.** Summary banners carry an empty id (`"{account_id}\x1f"`);
-  `application.py` `_on_notify_open_chat`/`_on_notify_open_mail` now fall back to
-  `open_account_tab(account, "chat"|"mail")` when the id is empty.
-
-### Preferences split (`preferences.py`)
-- Notification settings moved from the General page to a new **Notifications** tab
-  (`_notifications_page`): an **Alerts** group (enable / relevance / respect-DND)
-  and a dedicated **Quiet hours** group. General keeps a slimmed **Background**
-  group (run-in-background + EDS calendar). Several subtitles clarified.
-
-## Attention/notifications (P1) + chat status polish (2026-06-15)
-
-**Where we stopped.** Finished a research-driven notifications pass ("P1") and a
-round of chat-bubble polish. Everything below is built into `_install`, all
-green (`make build` + `make install` + 4 meson tests + `make lint`), and
-verified headlessly (notifier gating logic, mute persistence + `from_dict`
-round-trip, view construction, Preferences against the installed schema). **Not
-yet eyeballed in the GUI — ask the user to `make run`** and try DND / quiet
-hours / mute / sending a message.
-
-**Backstory:** a `deep-research` run on CSCW/HCI collaboration (Dourish &
-Bellotti 1992; Fogarty 2004; Dabbish & Kraut 2003; Mark 2008; Iqbal & Bailey
-2007/08) produced a refinement backlog. The through-line: *abstract beats full
-beats none*, *presence ≠ availability* (only changing **delivery** reduces
-interruptions), and interruptions cost wellbeing fast — so gate banners, don't
-add more signals. P1 below implements the delivery-gating half.
-
-### P1 notifications (`core/notifications.py`, `preferences.py`, schema)
-- **System DND + quiet hours.** `NotificationManager._focus_active()` = system
-  DND **or** quiet hours. System DND reads GNOME's
-  `org.gnome.desktop.notifications` `show-banners` (False = DND on) via a
-  schema-guarded, cached `_gnome_notif_settings()` that degrades to "not in DND"
-  if the schema is absent (e.g. minimal Flatpak runtime). Quiet hours = a nightly
-  HH:MM window that wraps midnight (lexical string compare on zero-padded times).
-- **Relevance tiers.** Each item is tier-1 (1:1 chat / important mail / calendar
-  reminder → `HIGH`) or tier-2 (group chat / ordinary mail → `NORMAL`).
-  `_allowed(tier)` gates the **banner only** (badges/unread always update, so
-  nothing is lost). `notify-level` = `all` | `priority`; priority suppresses
-  tier-2 banners.
-- **Per-chat/-channel mute.** `Account.muted_sources` (added to the `from_dict`
-  allowlist — required or new fields silently drop) + `is_muted`/`toggle_mute`
-  in `source_nav.py`. Bell toggle in the Chat header (`chat_view._mute_btn`) and
-  Teams channel header (`teams_view._mute_btn`); muted ⇒ no banner **and** no
-  badge. Notifier reads `account.muted_sources` directly (no widgets import).
-- **New GSettings keys** (require `make build` to reinstall the schema):
-  `notify-level`, `notify-respect-system-dnd`, `quiet-hours-enabled`,
-  `quiet-hours-start`, `quiet-hours-end`. Preferences → *Notifications &
-  background* exposes all of them (time entries validate to zero-padded HH:MM
-  and never persist a half-typed value).
-
-### Chat bubble polish (`widgets/chat_view.py`)
-- **Fluid send (no rebuild, no image reload).** The optimistic echo is remembered
-  (`self._optimistic = {widget, text}`); when the server confirms, that exact
-  widget is **adopted** (kept, registered under the real id) instead of
-  rebuilding the thread — so images never reload and the view never jumps.
-  Full rebuild now only for genuine structural changes / rare races. (The earlier
-  per-URL `_image_cache` is still there as a second line of defence.)
-- **Single delivery indicator.** `_apply_status()` shows ONE glyph on my
-  most-recent message only (Teams-style — not a check per line): clock while
-  sending → check once sent. **No "Seen"/eye** — the Graph chat API exposes no
-  read receipt for the other party (only Teams' private service has it), so we
-  deliberately don't fake it. User chose "check only" over an inferred eye.
-- **Reactions are pills below the bubble** (a vertical `col` wraps bubble +
-  reactions), with horizontal insets so indicators aren't jammed to the edge.
-
-### What's next (P2 from the same backlog)
-1. ✅ **Notification batching/digest** — done 2026-06-16 (see the top section).
-2. **Meeting auto-focus**: derive an in-meeting state from the user's own
-   calendar and auto-enable focus (suppress tier-2) — coarse only, never expose
-   meeting titles (Fogarty calendar-busy). Detection misfires silently swallow
-   notifications, so gate behind a setting and keep items recoverable via badges.
-3. **Dashboard catch-up** ("since you were away"): unread markers + per-channel
-   unread counts. NOTE: cheap per-channel unread isn't available from Graph — the
-   chats half is feasible, channels need a workaround. (Deliberately dropped #6
-   "appear offline / invisible" per the user.)
-   Caveat the research itself flagged: no direct evidence was found on
-   threading-vs-linear or grounding/search — treat those as a separate pass.
-
-## Dashboard Activity + chat/notes fixes (2026-06-15)
-
-- **Dashboard "Activity" feed** (`widgets/dashboard_view.py`): a new section
-  (shown when there's a work/school MS account) with two groups — **Team
-  channels** (latest post from each *starred channel*) and **Chats** (recent
-  conversations from one cheap `list_chats_page` call, starred chats floated to
-  the top). A Today preview column + a "New chats" stat card interleave the
-  newest items. Channel rows route to the Teams tab; chat rows to `open_chat`.
-  Aggregation runs inside the existing off-thread `work()`; `_channel_activity`
-  fetches the latest channel post. The **Pinned** section now only collects
-  mail/calendar pins (`_is_mailcal_pin`) — channel/chat pins go to Activity.
-- **Star channels & chats**: `TeamsView` (content header ★, pins the open
-  channel) and `ChatView` (header ★, pins the open chat) call `toggle_pin`,
-  which now takes `**extra` so a channel pin carries `team_id`/`team_name`. Pin
-  kinds are `"channel"` / `"chat"` (`source="teams"`); see `source_nav.py`.
-- **Chat images no longer reload on every send/receive**: `ChatView` now caches
-  decoded thumbnails by URL (`_image_cache`, reset on chat switch). A full
-  rebuild (reconciling an optimistic send) reuses them instantly via
-  `_picture_for` instead of re-fetching every picture. Fast-path append was
-  already in place; the cache covers the rebuild case.
-- **OneNote crash hardening + full width**: `_render_note_body` dropped the
-  `Adw.Clamp` (content is now full-width with margins) and splits any text block
-  over `_MAX_LABEL_CHARS` (12k) across multiple labels, so a single very long
-  paragraph can't grow one label past the GL texture ceiling and re-trigger the
-  `gsk_gpu_upload_cairo_op` segfault that killed the WebView path.
-- **Gmail folder dropdown** spanned only its natural width because it was the
-  `Adw.HeaderBar` title widget (centred/capped). It's now in its own full-width
-  bar below the header, mirroring the Microsoft layout (`mail_view.py`).
-
-Verified: `make build` + 4 meson tests + `make lint`; headless instantiate of
-Dashboard/Teams/Chat/Mail (MS + Gmail) and render of the Activity section with
-fake data. GUI not yet eyeballed — ask the user to `make run`.
-
-## Teams tab: channels + OneNote (2026-06-15, v0.2.1)
-
-A new top-level **Teams** capability/tab, distinct from the flat **Chat** tab.
-Microsoft work/school only (`gmail` does **not** declare `TeamsCapability`, so
-Google accounts get no Teams tab; their Chat *spaces* stay under Chat). Shipped
-and built into the install tree.
-
-- **Capability wiring** mirrors the others: `TeamsCapability` in
-  `core/interfaces.py` (+ `"teams"` in `CAPABILITY_KEYS` and `capabilities_of`),
-  implemented by `Microsoft365Module`; `"teams"` in `window.py` `CAPABILITY_UI`
-  and gated out for personal accounts alongside `"chat"`; view built in
-  `_capability_placeholder`.
-- **New scopes** (`core/auth/msal_graph.py`, requested at sign-in in
-  `window.py`): `SCOPES_CHANNELS` (`Channel.ReadBasic.All`,
-  `ChannelMessage.Read.All`, `ChannelMessage.Send` — **tenant-admin consent**)
-  and `SCOPES_NOTES` (`Notes.ReadWrite.All`, `Notes.Create` — no admin consent).
-  Adding scopes forces existing MS accounts to **Sign Out → Sign In** once; the
-  view shows the shared "Re-sign in" prompt on a scope error.
-- **Graph client** (`modules/microsoft365/graph.py`): `list_joined_teams`
-  (lightweight id+name; **not** the file-mount `list_teams` which returns
-  `Drive`s), `list_team_channels`, `list_channel_messages_page`
-  (`$expand=replies`, normalized via `_channel_message_row`), `send/
-  reply_channel_message`; OneNote against the **group** notebook
-  (`/groups/{teamId}/onenote/…`): `list_notebooks`, `list_note_sections`,
-  `list_note_pages`, `get_note_page` (raw HTML), `create_note_page`
-  (`_post_html`, text/html), `update_note_page` (JSON replace command), and
-  `fetch_note_image` (bearer-authenticated image bytes).
-- **`widgets/teams_view.py`**: `Adw.NavigationSplitView` — sidebar of teams
-  (`Adw.ExpanderRow`, channels lazy-loaded on expand), content = a channel with
-  an inner `Adw.ViewStack`/`ViewSwitcher` of **Conversation** + **Notes**.
-  Conversation renders posts as cards (subject/sender/time/body, threaded
-  replies, per-post reply entry, bottom composer); image attachments are inline
-  thumbnails and files are chips, matching `chat_view`. Notes = Section + Page
-  dropdowns + full-width reader.
-- **Notes rendering is NATIVE, not WebKit** (important): OneNote pages are long;
-  a full-page WebView snapshot overran the GPU texture limit and segfaulted in
-  `gsk_gpu_upload_cairo_op` (GTK 4.22, Intel/Mesa, Wayland; `WEBKIT_DISABLE_
-  DMABUF_RENDERER=1` is already set, so WebKit falls back to one big cairo
-  surface). `_render_note_body` walks the page HTML, splitting `<img>` from
-  text: text → wrapping labels (`_html_to_pango`/`_strip_html` reused from
-  `graph.py`), images → lazy native `GdkTexture` thumbnails, all in a scrolled
-  `Adw.Clamp`. Editing seeds the rich-text editor from **plain text**, so
-  existing formatting is lost on save of an existing page (new pages full
-  fidelity) — known v1 limitation, next to improve.
-- **Release/CI**: `io.github.sha5b.Cloudy.yml` no longer builds
-  `blueprint-compiler` from gitlab.gnome.org (SDK 48+ bundles it) — a 503 there
-  had broken the 0.2.0 release build.
-
-Verified: `make build` + `make install` + 4 meson tests green; `make lint`;
-headless instantiate + render of `TeamsView` (teams/channels/posts, note body,
-attachment paths). GUI not yet eyeballed for this exact build — ask the user to
-`make run` and open Teams → channel → Conversation/Notes.
-
-## Chat scroll smoothness + animations (2026-06-15, earlier)
-
-Polish pass over the Chat thread's scrolling and motion (`widgets/chat_view.py`,
-`data/style.css`). Builds + 4 meson tests green; headless widget import verified.
-The Adw animation API (`CallbackAnimationTarget`, `TimedAnimation`, `Easing`) was
-confirmed present in this libadwaita binding before use.
-
-- **Incremental thread updates** — `_render_thread` no longer tears down and
-  rebuilds every bubble on each poll/refresh. It keeps a per-message fingerprint
-  list (`_rendered_sigs`, `_msg_sig`); when the live thread is an unchanged
-  **prefix** of the new one (the common case: a message just arrived) it only
-  **appends** the new bubbles (`_appended_only` → `_full_render` is the fallback
-  for edits/reactions/deletes to older messages). This stops the whole thread
-  **flickering and re-downloading every inline image** every 5 s, and removes the
-  scroll lurch that came with it. An un-acked optimistic echo forces a full
-  rebuild so it's replaced, never duplicated (`_has_optimistic`).
-- **Scroll state is now derived from the adjustment**, via its `value-changed`
-  signal (`_on_thread_scrolled`) — *replacing* the old `EventControllerScroll`.
-  This is the deliberate reversal of the previous note: wheel **and** trackpad
-  **and** scrollbar-drag **and** keyboard (PageUp/Home/End) now all update the
-  pinned/scrolled-up state and the "jump to latest" button identically. Our own
-  programmatic moves go through `_set_scroll`, which sets an `_adjusting` guard so
-  the handler ignores them. `changed` (`_on_thread_resized`) still re-pins on
-  height changes.
-- **Per-frame position hold** (`_hold_position`, a `add_tick_callback` over a
-  ~350 ms settle window) replaces the old one-shot `idle_add`+`timeout(120)`
-  re-pin. Re-asserting the pin/anchor on *every* frame collapses the
-  "jumps multiple times" seen when **loading older history**: several older
-  bubbles' images decode a frame or two apart, and a reactive (`changed`-only)
-  correction left a visible one-frame "peek" each time. `_on_older` now also
-  fixes a real bug — it updates `_rendered_sigs`/`_thread_sig` so a later poll
-  takes the cheap append path instead of a full image-reloading rebuild.
-- **Animated "jump to latest"** — the floating button glides with an
-  `Adw.TimedAnimation` (`EASE_OUT_CUBIC`, 250 ms) instead of snapping; auto-pins
-  stay instant.
-- **New-bubble fade-in** — appended/optimistic bubbles get a one-shot
-  `.cloudy-bubble-new` CSS class (`@keyframes cloudy-bubble-in`, opacity only,
-  220 ms), removed after it plays so an in-place rebuild won't replay it.
-- **Caching/perf (reviewed, already good)**: chat list, each thread, members and
-  contacts are cached on `app.cache` (stale-while-revalidate, 90 s) — switching
-  chats is instant then revalidates. Client calls **paginate** (`$top=50` chats,
-  `$top=30` messages) and batch (presence, contacts) — nothing loads everything.
-  The cache is **in-memory only** (cleared on restart); persisting it to disk for
-  an instant cold start is a possible future win, not done.
-
-## Chat capability + UX session (2026-06-15, later)
-
-A large session that added a **Chat capability** (Teams chats / Google Chat) and
-polished Mail/Calendar. Everything below is shipped and built into the
-RPM + Flatpak (`make release` reinstalls the user Flatpak, so running app ==
-release). Builds + 4 meson tests green; verified by headless widget instantiation
-(see [[cloudy-widget-smoke-test]] pattern in memory).
-
-### New: Chat capability (`widgets/chat_view.py`, `widgets/chat_compose.py`)
-A 4th capability alongside Files/Mail/Calendar. Wired exactly like the others:
-`ChatCapability` in `core/interfaces.py` (+ `"chat"` in `CAPABILITY_KEYS` and
-`capabilities_of`), declared by both `Microsoft365Module` and `GmailModule`,
-`"chat"` in `window.CAPABILITY_UI`, and a `ChatView` branch in
-`window._capability_placeholder`. Clients gained chat methods (see below).
-
-- **Provider scope**: Teams chat works on **work/school** Microsoft accounts only
-  (delegated `Chat.ReadWrite`, unmetered). Google Chat is **Workspace-only**;
-  consumer Gmail has no Chat API → the view degrades to a clear message and most
-  write ops raise a friendly `GoogleError`. **The Chat tab + Teams/Shared mail
-  sources are hidden for *personal* accounts** via `Account.is_personal`
-  (email-domain heuristic) — `window._show_account` drops `"chat"`, and
-  Mail/Calendar set `self._is_ms = provider == microsoft and not is_personal`.
-- **Chat list**: 1:1 / group / **meeting** chats; `Adw.Avatar` initials (calendar
-  glyph for meeting chats); unread = bold name + accent dot (Teams
-  `viewpoint.lastMessageReadDateTime` vs last message, and **never** when the
-  last message is `from_me` or the marker is missing — that was a false-unread
-  bug); "You:" preview prefix; conversational dates (`format.relative_time`:
-  Today→`HH:MM`, Yesterday, weekday, `14 Jun`, date); newest-first; **pagination**
-  ("Load older conversations"); **filter by name** (type) + **server-side message
-  search** (Enter → Graph `/search/query` chatMessage → hit rows open the chat).
-- **Thread**: bubbles (mine right/accent), oldest-first, **older-message
-  pagination** (top button + auto-load near the top), reliably **pins to bottom**
-  on open. (Scroll handling was reworked in the *latest* session — see the top
-  section. The state is now derived from the adjustment's `value-changed`, with a
-  `changed` re-pin and a per-frame `_hold_position` settle; the old
-  `EventControllerScroll` is gone.) Empty/system messages are skipped so a bare
-  timestamp never shows as its own bubble.
-- **Compose**: Enter sends (no send button — removed by request). **Attach button**
-  (paperclip, `Gtk.FileDialog`, images) + **Ctrl+V paste** both *stage* a
-  thumbnail in a strip; caption optional; sent on Enter. Images go as Teams
-  **inline hosted content** (base64) so they render inline both sides. **@mentions**:
-  type `@` → popover of chat members (`list_chat_members`, cached) → inserts
-  `@Name`, recorded; on send builds HTML `<at id>` tags + the `mentions[]` array.
-- **Per-message right-click menu**: emoji **reaction** row (`setReaction`), Reply
-  (inline quote via a context bar), Forward (opens New Chat prefilled), Copy,
-  **Select** (enter multi-select), **Download** (attachments), **Copy link**
-  (`web_url`), Edit (own, `PATCH`), Delete (own, `softDelete`). Reactions display
-  as chips under bubbles.
-- **Inline images**: downloaded with the bearer token (hosted-content URLs need
-  auth — a plain open 401s), **downscaled to a 240px thumbnail** (`_thumb_texture`;
-  a `Gtk.Picture`'s natural size = its paintable's, so scale the *pixbuf*, not
-  `set_size_request`). Relative `../hostedContents/..` srcs are resolved to the
-  absolute message URL.
-- **New chat** (`chat_compose.ChatComposeWindow`, an `EditorWindow`): To-field
-  contacts autocomplete; `start_chat` creates/reuses a 1:1 (Teams) then sends.
-- **Notifications**: chat polled alongside mail/calendar (`notifications.py`
-  `_poll_chat`), raises a popup + deep-links via `app.notify-open-chat` →
-  `window.open_chat`. Red **chat unread badge** on the sidebar account row
-  (`notifier._chat_unread`, `chat_unread_count`, `mark_chat_read` cleared on open).
-
-Client chat methods — Graph (`modules/microsoft365/graph.py`) and Google
-(`modules/gmail/google_client.py`), same normalized shapes:
-`list_chats[_page]`, `list_chat_messages[_page]`, `list_chat_members`,
-`send_chat_message`, `send_chat_images`, `send_chat_html`, `fetch_bytes`,
-`edit_chat_message`, `delete_chat_message`, `set_reaction`/`unset_reaction`,
-`start_chat`, `search_messages`. Google raises `GoogleError` for the
-Teams-only write ops. Scopes: `SCOPES_CHAT` added to `msal_graph` (`Chat.ReadWrite`)
-and `google_oauth` (Workspace chat scopes), both in the sign-in consent — **adding
-them forces existing accounts to Sign Out → Sign In once**.
-
-### Also this session — Mail / Calendar / shell
-- **Sidebar unread badges** per account: accent mail-unread pill (Graph inbox
-  `unreadItemCount` / Gmail `INBOX.messagesUnread` via `client.inbox_unread()`)
-  + red chat pill. `window.set_account_unread` / `set_account_chat_unread`,
-  styled `.cloudy-badge` / `.cloudy-badge.chat`.
-- **Mail pagination** — `list_messages_page` (Graph `@odata.nextLink` / Gmail
-  `nextPageToken`) + a "Load older messages" row. **"Unread" virtual folder**
-  (default at startup, filters the inbox client-side) + **per-account folder
-  memory** (`window.remember_mail_folder`/`last_mail_folder`, survives account
-  switches). **Multi-select** (MULTIPLE mode, Shift/Ctrl) + **Delete on
-  selection**; **arrow nav** (↑/↓/←/→ open in reader, Shift extends), Ctrl+A,
-  Ctrl+R reply, Ctrl+N new. **Search** (`set_filter_func`).
-- **Calendar** — **"● Live now"** marker on ongoing events (`_is_live`);
-  multi-select + arrow nav + Delete on selected events; **search**
-  (`set_filter_func`). **Notification deep-link fix**: event notifications now
-  carry the event id and open the specific event (`open_calendar_event` →
-  `CalendarView.open_event`) — previously only landed on the tab.
-- **Teal accent**: `data/style.css` overrides `@accent_bg_color`/`accent_fg_color`/
-  `accent_color` (`#2190a4`) at APPLICATION priority.
-
-### Shipped since (was deferred, now built)
-- **Group-chat creation + member management** — `start_group_chat`
-  (`POST /chats`, group) from the New-chat composer with 2+ recipients; the
-  conversation header's **people button** opens a roster popover to **rename**
-  (`rename_chat`), **add** (`add_chat_member`) and **remove** (`remove_chat_member`)
-  members, each with a presence dot.
-- **Presence dots** (`get_presences` → `POST /communications/getPresencesByUserId`,
-  `Presence.Read`): Teams-style dot on 1:1 chat avatars + the conversation header
-  subtitle, batch-refreshed every 60 s and patched in place (no list rebuild).
-- **Multi-select** in the thread (Shift-click a bubble) → a select bar to
-  **Forward / Copy / Delete** several messages at once.
-
-### Next / deferred (asked for, not yet built)
-- **Arbitrary file attachments** (non-image: PDFs/docs) — OneDrive upload then
-  reference as a `reference` attachment.
-- **Forward into an existing chat** (chat picker) — today Forward opens a *new*
-  chat prefilled.
-- **Google Chat**: image send, edit, reactions, member list, message search are
-  all stubbed (`GoogleError`/`[]`) — Workspace media-upload + APIs needed.
-- Not feasible for a delegated desktop client (don't promise): typing indicators,
-  read receipts, mute/pin/hide chat, true push (we poll), threaded chat replies.
-
-## earlier session (2026-06-15)
-
-### Done this session
-- **Inline event edit** (NEXT #1, see below) — shipped + built into RPM/Flatpak.
-- **Refactor**: shared event date/time helpers extracted to
-  `widgets/event_time.py` (`iso_to_local_naive`, `parse_hhmm`,
-  `local_to_utc_iso`); `event_window.py` + `event_compose.py` both use them.
-- **Full-app bug audit** (7 parallel review passes). High-confidence fixes
-  applied; the rest triaged below as **Known issues**.
-- **Bug fixes applied**:
-  1. `update_event` (both clients) now treats `attendees=None` as "leave
-     untouched" but a list — **including `[]`** — as "set it", so removing every
-     attendee in the inline editor actually clears them server-side (was a
-     no-op: `if attendees:` skipped empty lists).
-  2. Inline editor **multi-day events no longer collapse to one day** — the
-     original start→end day span is preserved across an edit (`_edit_day_span`).
-  3. `notifications.py` priming timer was sharing `_tick` (which returns `True`)
-     so the "prime once" timer fired **forever** alongside the steady timer,
-     doubling poll traffic — now a one-shot `_prime_once` returning `False`.
-- **App-ID rename** `io.github.sha5b.Clouddrive` → **`io.github.sha5b.Cloudy`**
-  (data files, schema id, D-Bus name/paths, icons, gresource prefix, Makefile,
-  uninstall script). Repo URLs kept as `Cloudy` (repo renamed later).
-  Best-effort dconf migration in `application._migrate_legacy_settings` carries
-  accounts/prefs over (works on host/RPM; Flatpak runtime has no `dconf` CLI →
-  re-add accounts there once).
-- **Per-account mountpoints** (`mounts.mount_base_for`): each account's drives
-  mount under their own folder so same-named drives across accounts don't
-  collide and a mount is attributable per account (no more re-mounting). D-Bus
-  status walks ancestors for the new nesting. Pruned stale flat-mount bookmarks.
-- **Nautilus extension**: removed all unmount/mountpoint code (nautilus-python
-  can't add sidebar items — unmount is via in-app Files → Unmount or native ⏏).
-- **Design system** (all 4 audit recommendations): `data/style.css` (loaded in
-  `application._load_styles`), `widgets/metrics.py` 4px scale + window sizes,
-  `source_nav.status_page`/`loading_box`, `.cloudy-meta`/`.cloudy-day`/
-  `.cloudy-chip`/`.cloudy-pill`/`.cloudy-section`, title-hierarchy fix, dead
-  `preferences.blp` removed, POTFILES completed. **Helpers are in place; rolling
-  `.cloudy-meta`/`loading_box` into every remaining caption/loading spot is
-  incremental polish best done with the app open to eyeball.**
-
-### Known issues (from the audit — NOT yet fixed, triaged by priority)
 **Security / privacy (needs a deliberate decision — behavior change):**
-- **Google OAuth has no `state` parameter** (`core/auth/google_oauth.py`) — CSRF /
-  auth-code-injection gap; PKCE covers the token exchange but not session
-  binding. Add a random `state`, validate on the redirect.
-- **Google OAuth stores `code`/`error` on the _class_, not the instance** — two
-  concurrent Google sign-ins race and cross-contaminate. Move result state onto
-  the per-flow `HTTPServer` instance.
-- **OAuth loopback binds `127.0.0.1` but the `redirect_uri` says `localhost`** —
-  Google treats these as distinct redirect URIs and `localhost` may resolve to
-  IPv6 `::1`; can make sign-in hang/fail. Make both use the same literal.
-- **Mail reader loads remote content** (`message_view.py`) — only JS is disabled;
-  external images load → tracking-pixel/IP leak on open. Consider blocking remote
-  resources by default with a "load remote images" opt-in.
+- **Google OAuth has no `state` parameter** (`core/auth/google_oauth.py`) — CSRF / auth-code-injection gap (PKCE covers token exchange, not session binding). Add a random `state`, validate on redirect.
+- **Google OAuth stores `code`/`error` on the _class_, not the instance** — two concurrent Google sign-ins race and cross-contaminate. Move result state onto the per-flow `HTTPServer` instance.
+- **OAuth loopback binds `127.0.0.1` but `redirect_uri` says `localhost`** — Google treats these as distinct, and `localhost` may resolve to IPv6 `::1`; can hang/fail sign-in. Use the same literal for both.
+- **Mail reader loads remote content** (`message_view.py`) — only JS disabled; external images load → tracking-pixel/IP leak on open. Consider blocking remote resources by default with a "load remote images" opt-in.
 
-**Correctness (safe to fix, just not done yet):**
-- **No `@odata.nextLink` pagination** anywhere in `graph.py` (folders, groups,
-  contacts, drives, calendarView) — accounts with >`$top` items silently
-  truncate. Loop on `@odata.nextLink`.
-- **Mount success/failure mis-detected** (`mounts.py`): `rclone mount --daemon`
-  forks and returns 0 before the FUSE mount exists, so `is_mounted()` right after
-  reports `active=False` and real mount failures are swallowed. Poll with a short
-  timeout + capture daemon stderr.
-- **`recent_changes` walk isn't bounded _within_ a single directory**
-  (`file_browser.py`) — the deadline/count check is only at the top of the
-  per-dir loop, so one huge dir on a FUSE mount blocks past the budget. Check the
-  deadline in the inner loop and prune `dirnames` when over budget.
-- **Google `reply_all` drops CC/other recipients** (`google_client.py`) — only
-  replies to the original sender even when `reply_all=True`.
-- **Google all-day `end` is exclusive** (`_event_from_json`) — off-by-one vs the
-  Graph shape in views that compute/display the end day.
-- **`respond_event` only blocks `group:` ids** (`graph.py`) — a `shared:` id would
-  be prefixed into a `/me/events/shared:…/accept` path; reject/route it.
-- **Unbounded dedup growth** (`notifications.py`) — `_seen_mail` /
-  `_notified_events` only ever grow; cap/trim them (matters in background mode).
+**Correctness (safe to fix, not done):**
+- **No `@odata.nextLink` pagination** anywhere in `graph.py` (folders, groups, contacts, drives, calendarView) — accounts with >`$top` items silently truncate. Loop on `@odata.nextLink`.
+- **Mount success/failure mis-detected** (`mounts.py`): `rclone mount --daemon` forks and returns 0 before the FUSE mount exists, so `is_mounted()` right after reports `active=False` and real failures are swallowed. Poll with a short timeout + capture daemon stderr.
+- **`recent_changes` walk isn't bounded _within_ a single directory** (`file_browser.py`) — the deadline/count check is only at the top of the per-dir loop, so one huge dir on a FUSE mount blocks past budget. Check the deadline in the inner loop and prune `dirnames` when over budget.
+- **Google `reply_all` drops CC/other recipients** (`google_client.py`) — only replies to the original sender even when `reply_all=True`.
+- **Google all-day `end` is exclusive** (`_event_from_json`) — off-by-one vs the Graph shape in views that compute/display the end day.
+- **`respond_event` only blocks `group:` ids** (`graph.py`) — a `shared:` id would be prefixed into a `/me/events/shared:…/accept` path; reject/route it.
+- **Unbounded dedup growth** (`notifications.py`) — `_seen_mail` / `_notified_events` only ever grow; cap/trim (matters in background mode).
 
-**Low / robustness:** `create_share_link` hardcodes `scope:"organization"`
-(invalid for consumer OneDrive); Google `get_event` `body_html` heuristic
-(`"<" in s and ">" in s`) false-positives plain text; cid-image strip regex in
-`message_view.py` over-matches on `>` in attribute values and misses unquoted
-`src=cid:`; `file_browser` rename/new-folder accept names with `/`/`..`
-(path traversal within the browser); EDS publish builds a bare `VEVENT` with a
-likely-wrong parent UID so it may never publish. Full per-finding detail is in
-the session transcript.
+**Low / robustness:** `create_share_link` hardcodes `scope:"organization"` (invalid for consumer OneDrive); Google `get_event` `body_html` heuristic (`"<" in s and ">" in s`) false-positives plain text; cid-image strip regex in `message_view.py` over-matches on `>` in attribute values and misses unquoted `src=cid:`; `file_browser` rename/new-folder accept names with `/`/`..` (path traversal within the browser); EDS publish builds a bare `VEVENT` with a likely-wrong parent UID so may never publish.
 
-## session (2026-06-14)
+**Edge in shipped inline event edit:** removing **all** attendees in the inline editor doesn't clear them server-side because `update_event` only sends `attendees` when the list is non-empty. (NOTE: a later session's fix #1 below claims to have addressed `attendees=[]` — verify which is current against `update_event` before relying on either.)
 
-A very large session. **Everything below is built + reinstalled into the Flatpak,
-but NOT committed to git** — first task next time: review the working tree and
-commit on a branch (logical commits).
+**Credentials note:** ⚠️ the Google client secret was pasted in chat during setup — **rotate it** in Google Cloud Console before any public release.
 
-### Done this session
-- **Rebrand**: `com.fiberelements.Cloudy` → **`io.github.sha5b.Cloudy`**;
-  author → **Shahab Nedaei <ned.tabulov@gmail.com>** (sha5b). All file names,
-  schema id, D-Bus name/paths, icons renamed.
-- **Packaging**: Fedora **RPM** (`packaging/cloudy.spec`, noarch, meson),
-  `make rpm`/`srpm`; **Flatpak bundle** `make flatpak-bundle`; **`make release`**
-  → `release/` (RPM + single-file `.flatpak`) **and installs the bundle** so the
-  running app matches. `release/` is gitignored (artifacts embed baked creds).
-- **Credentials** baked at build time via `meson.options`
-  (`ms_client_id`/`google_client_id`/`google_client_secret`) → a generated
-  GSettings **vendor override** (`data/cloudy.gschema.override.in`); read from
-  `.env` by the Makefile. Source ships empty defaults. Security-audited: no
-  secrets in git history/tree.
-- **Host-visible Flatpak mounts**: rclone runs on the host via `flatpak-spawn
-  --host` into `~/.local/share/cloudy/mounts` (manifest grants
-  `--talk-name=org.freedesktop.Flatpak` + `--filesystem`). `mounts.active_mounts()`
-  reads `/proc/self/mountinfo` (stall-proof) — fixed the dashboard hang.
-- **Nautilus**: quick **Unmount (Cloudy)** menu item (file view, not sidebar —
-  API can't touch sidebar bookmarks); extension **auto-installs** (RPM → system
-  path; Flatpak → copied to host on first run via `provisioner.ensure_host_
-  nautilus_extension`). Fixed dotted D-Bus `OBJECT_PATH`.
-- **Calendar redesign**: month **grid** (`widgets/month_grid.py`) in the Calendar
-  tab + Dashboard; **past events** (loads the visible month); clicking an event
-  opens a **non-modal event window** (`widgets/event_window.py`) with detail +
-  RSVP + delete + **Edit**.
-- **Meeting responses**: attendee **response tracker** on the event (pills grouped
-  by status via `Adw.WrapBox`); empty-bodied accept/decline emails show a
-  placeholder (see gotcha below).
-- **Dashboard**: aggregate **cached** (stale-while-revalidate, no reload on every
-  switch) + a Refresh button; pinned sources' **unread mail + events merged**
-  into the overview.
-- **Contacts autocomplete**: MS via **People API** (`/me/people` + `/me/contacts`,
-  new `People.Read` scope); Google connections + **otherContacts** (new
-  `contacts.other.readonly`). Both need **re-sign-in** (see below).
-- **Account add** now auto-enables the provider's module (Google wasn't
-  activating — `enabled-modules` defaulted to microsoft365 only).
-- Fixes: WebKit blank mail (`WEBKIT_DISABLE_DMABUF_RENDERER=1` in `main.py` +
-  manifest); strip `cid:` inline images; `update_event` (Graph + Google) for the
-  Edit flow; non-transient editor/event windows so **minimize/maximize** show;
-  event-compose timezone (local→UTC); escaped `&` in a preferences title.
+---
 
-### NEXT (asked for, deferred to here)
-1. ~~**Inline event edit**~~ — **DONE** (next session, 2026-06-15). The Edit (✏️)
-   button now toggles `EventDetailWindow`'s detail pane into an inline edit form
-   (subject, all-day, day, start/end time, location, **removable attendees**,
-   description) with Save/Cancel in the header → `client.update_event(eid, …)`,
-   then reloads the detail. `get_event` now returns attendees with `email` (Graph
-   `emailAddress.address` / Google `email`) so the editor re-sends the full
-   desired attendee list (PATCH keeps attendees if omitted). Description prefills
-   only **plain-text** bodies — HTML-bodied events start blank (empty body is
-   omitted on PATCH, so the server's is preserved unless the user types).
-   *Edge*: removing **all** attendees doesn't clear them server-side, because
-   `update_event` only sends `attendees` when the list is non-empty.
-   `event_compose.EventWindow` is still used for **New** event creation.
-2. **Contacts dropdown**: only suggests after **Sign Out → Sign In** per account
-   (grants `People.Read` / `contacts.other.readonly`). If it still doesn't show
-   after re-consent, `GtkEntryCompletion` is deprecated/flaky in GTK4 — replace
-   `compose_view._setup_completion` with a custom suggestion popover.
-3. **Commit** the session.
+## Changelog (reverse-chronological)
 
-### Gotchas learned this session
-- **Smoke-test by INSTANTIATING widgets**, not just importing — see
-  `[[cloudy-widget-smoke-test]]`. `Gtk.init_check()` works headless here; a
-  `monthdatescal` typo passed import but crashed `MonthGrid()`.
-- **`meetingMessageType`** can't be `$select`ed or entity-cast on the messages
-  endpoint (both 400) — the "X accepted" card was dropped; empty meeting-response
-  emails fall back to the "No message content" placeholder.
-- **`make release` installs the bundle**; other flatpak builds need
-  `make flatpak-test` to update the *running* app (stale-build confusion bit us
-  repeatedly — symptoms looked like the fix didn't work).
-- **Windows must be non-transient** (no `transient_for`) for GNOME to show
-  minimize/maximize.
+### 0.2.4 release — RSVP + Activity feed (2026-06-18)
+- Calendar RSVP works for MS *and* Google (Google gained `respond_event`; calendar was always writable, old `can_respond=False` was just unimplemented); unanswered invites render dimmed-but-clickable (`responseStatus` now in the list query).
+- Meeting-invite **emails** show Accept/Tentative/Decline sending a standards `METHOD:REPLY` iMIP via new `core/ics.py` (parser + reply builder).
+- New **Activity** tab (`widgets/activity_view.py`), first/default — aggregates recent mail + upcoming/unanswered invites + recent chats; MS adds "reacted to"/"mentioned you" via `GraphClient.recent_chat_activity()` (bounded scan of 8 most-recent chats).
+- Image viewer (`media_window.py`): scroll-zoom + drag-pan; multi-image chat messages lay out as an `Adw.WrapBox` gallery. Composer gained `isReadReceiptRequested` toggle (MS only).
+- CI: `.github/workflows/release.yml` bumped checkout@v4→v6, action-gh-release@v2→v3 (Node 20→24). Release recipe: `gh release create vX.Y.Z --target main --notes-file <section>` creates the tag (triggers build) and sets notes at create time.
+
+### Chat/Teams/OneNote rework + cross-tab bug sweep (2026-06-17)
+- **Chat** (`widgets/chat_view.py`): `refresh_live()` re-fetches the chat list so a new message bumps its conversation to top (wired via `notifications._on_chat` → `window.refresh_account_chat`; skipped during search; re-selects open chat). Reply quotes — Graph parses Teams `messageReference` into a `reply_to` dict; `_bubble` renders a clickable quote (`_scroll_to_message` scrolls+flashes, toasts if not loaded). Optimistic echo now covers *every* send (`_render_pending` renders attached images from memory via `_local_image_widget`). Memory-safe image decode: `_thumb_texture`/`_texture_from_bytes` downscale *during* decode via the loader `size-prepared` signal (fixes OOM on huge images), raise `ValueError` on undecodable payload.
+- **Graph**: `_strip_reply_placeholder`, `_parse_message_reference`, `_split_attachments`; `_chat_message_row`/`_channel_message_row` return `reply_to` + cleaned body.
+- **Teams** (`teams_view.py`): `_message_block` renders the same `_reply_quote` for channel posts/replies.
+- **Cross-tab sweep**: escape NavigationPage/StatusPage titles (Mail/Calendar/Files); `.get("id")` instead of hard subscripts (folder/event/delete `KeyError` fixes); `"Group.Read" in str(error)` (was `TypeError`); right-click `Popover` `unparent()` on `closed` (leak); command-palette Down/Tab + Up/Shift+Tab wrap; added `.cloudy-bubble-image` rule.
+- **Cleanup pass**: removed dead code (`message_view.make_message_page`, `chat_view._initials`/`_QUICK_REACTIONS`, `RichTextEditor.is_empty`, `graph.site_by_path`, `send_chat_image`/`unset_reaction`, `window._account_menu_button`, `interfaces.CAPABILITY_KEYS`, `dashboard._pretty_day`, `mounts.authorize_onedrive`/`create_onedrive_remote`; `Account.is_business` kept — covered by unit suite); popover leaks fixed; Dashboard mail/calendar fetches split into separate try-blocks so one scope error doesn't blank the account overview.
+
+### Command palette + offline cache + unit suite (2026-06-16)
+- **Command palette** (`widgets/command_palette.py`): `Adw.Dialog` via `command-palette` action (Ctrl+K), lists signed-in accounts' visible surfaces + app actions, type-filter, ↑/↓/Tab nav, Enter activates. Imports `CAPABILITY_UI` from `window` *inside* `_build_entries` (keeps module headless-importable).
+- **Persistent offline cache** (`core/cache.py`): `MemoryCache(ttl, path=…)` persists JSON-serializable entries to `~/.cache/cloudy/cache.json` (atomic, throttled ~5s, `flush()` in `do_shutdown`); non-serializable values stay in-memory. Disk entries are **backdated past the TTL** so they read as stale — instant offline render, then revalidate. No view changes needed.
+- **Headless logic test suite** (`tests/unit/`): 69 `unittest` tests over the pure/logic layer (cache, Account roundtrip, pin/mute/scope helpers, Google/Graph normalization + id-routing, notifier gating/quiet-hours/digest, mount helpers, `capabilities_of`, `esc`). `make test` / `make test-unit`. `gi_setup.py` pins GI; `fakes.py` provides Fake App/Settings/Registry/Window.
+
+### Google parity — multi-calendar + Drive sources (2026-06-16)
+- **Multi-calendar** (`google_client.list_events`): aggregates every shown calendar (calendarList `selected`/`primary`) in parallel (`ThreadPoolExecutor` ≤8); a bad calendar returns `[]` without sinking the agenda. Id routing mirrors Graph: non-primary ids wrapped `gcal\x1f<calId>\x1f<eventId>` (`_wrap_event_id`/`_unwrap_event_id`); get/update/delete hit `/calendars/<calId>/events/<id>`. Read-only calendars (holidays/birthdays) return 403 → toast. Each event carries `calendar` name + `color`. Create still targets `primary`.
+- **Drive sources** (`files_view.py`, `mounts.py`): Files lists My Drive + Shared with me (instant) + Shared Drives (enumerated off-thread via rclone — see "deliberately NOT verified" above). Mount opts branch on `drive.kind`: `google_shared_with_me`→`shared_with_me=true`, `google_shared_drive`→`team_drive=<id>`.
+
+### Notifications digest batching + Preferences split (2026-06-16)
+- **`notify-level` value `digest`** (`all`|`digest`|`priority`): `digest` = tier-1 immediate + tier-2 batched. Per-account pending buffer `self._digest`; `_flush_digest` on a 600s timer builds one LOW summary per account ("3 new messages in 2 chats · 2 new emails", `ngettext` plurals), holds the queue while `_focus_active()` and releases when focus clears (nothing dropped). Digest summary banners carry empty id → `application.py` falls back to `open_account_tab(account, "chat"|"mail")`.
+- **Preferences split**: new **Notifications** tab (Alerts + Quiet hours groups); General keeps a slimmed Background group.
+
+### Notifications P1 + chat status polish (2026-06-15)
+- Research-driven (CSCW/HCI: *abstract beats full beats none*; *presence ≠ availability*; gate delivery, don't add signals).
+- **System DND + quiet hours**: `_focus_active()` = system DND (GNOME `org.gnome.desktop.notifications` `show-banners`, schema-guarded/cached, degrades to "not DND") **or** a nightly HH:MM quiet window (wraps midnight via lexical compare on zero-padded times).
+- **Relevance tiers**: tier-1 (1:1 chat / important mail / reminder → HIGH) vs tier-2 (group chat / ordinary mail → NORMAL); `_allowed(tier)` gates the **banner only** (badges/unread always update). `notify-level` `all`|`priority`.
+- **Per-chat/-channel mute**: `Account.muted_sources` (added to `from_dict` allowlist) + `is_muted`/`toggle_mute`; bell toggle in Chat/Teams headers; muted ⇒ no banner and no badge.
+- New GSettings keys (need `make build`): `notify-level`, `notify-respect-system-dnd`, `quiet-hours-enabled`, `quiet-hours-start`, `quiet-hours-end`.
+- **Chat bubble polish**: fluid send (optimistic echo widget is **adopted** under the real id on confirm, no rebuild/image-reload); single delivery indicator (clock→check, no eye); reactions as pills below the bubble.
+
+### Dashboard Activity + chat/notes fixes (2026-06-15)
+- Dashboard **Activity** feed (work MS accounts): Team channels (latest post per starred channel) + Chats (recent + starred floated). Channel rows → Teams tab, chat rows → `open_chat`. **Pinned** section now only collects mail/calendar pins.
+- **Star channels & chats**: `toggle_pin(**extra)` (channel pin carries `team_id`/`team_name`); kinds `"channel"`/`"chat"`.
+- Chat images no longer reload on every send/receive (`_image_cache` by URL, reset on chat switch, reused via `_picture_for`).
+- OneNote crash hardening: `_render_note_body` dropped `Adw.Clamp` (full-width) and splits text blocks over `_MAX_LABEL_CHARS` (12k) across labels so one paragraph can't overrun the GL texture ceiling (`gsk_gpu_upload_cairo_op` segfault).
+- Gmail folder dropdown moved to its own full-width bar below the header (was the capped HeaderBar title widget).
+
+### Teams tab — channels + OneNote (2026-06-15, v0.2.1)
+- New top-level **Teams** capability, MS work/school only. `TeamsCapability` wired like the others. New scopes: `SCOPES_CHANNELS` (`Channel.ReadBasic.All`, `ChannelMessage.Read.All`, `ChannelMessage.Send` — **tenant-admin consent**) + `SCOPES_NOTES` (`Notes.ReadWrite.All`, `Notes.Create`).
+- Graph: `list_joined_teams` (id+name, **not** the file-mount `list_teams`), `list_team_channels`, `list_channel_messages_page` (`$expand=replies`), send/reply channel; OneNote against the **group** notebook (`/groups/{teamId}/onenote/…`): list/get/create/update + `fetch_note_image` (bearer-auth).
+- `teams_view.py`: `Adw.NavigationSplitView`, channel content = inner ViewStack of Conversation + Notes. **Notes rendering is NATIVE, not WebKit** (a full-page WebView snapshot overran the GPU texture limit and segfaulted in `gsk_gpu_upload_cairo_op` on GTK 4.22 / Intel-Mesa / Wayland even with `WEBKIT_DISABLE_DMABUF_RENDERER=1`); `_render_note_body` walks HTML splitting `<img>` from text.
+- CI: manifest no longer builds `blueprint-compiler` from gitlab.gnome.org (SDK 48+ bundles it; a 503 there broke the 0.2.0 build).
+
+### Chat scroll smoothness + animations (2026-06-15)
+- **Incremental thread updates**: `_render_thread` keeps per-message fingerprints (`_rendered_sigs`/`_msg_sig`); an unchanged prefix → append only (`_appended_only`), full render only for edits/reactions/deletes — stops the thread flickering and re-downloading every inline image every 5s. Un-acked optimistic echo forces a full rebuild (`_has_optimistic`).
+- **Scroll state derived from the adjustment** via `value-changed` (`_on_thread_scrolled`), *replacing* `EventControllerScroll` — wheel/trackpad/scrollbar-drag/keyboard all update pinned state identically; programmatic moves go through `_set_scroll` with an `_adjusting` guard; `changed` re-pins on height change.
+- **Per-frame position hold** (`_hold_position`, `add_tick_callback` over ~350ms) replaces the one-shot idle re-pin — collapses multi-jump when loading older history; `_on_older` updates `_rendered_sigs`/`_thread_sig` so a later poll takes the cheap append path.
+- Animated "jump to latest" (`Adw.TimedAnimation`, EASE_OUT_CUBIC 250ms); new-bubble fade-in (`.cloudy-bubble-new`, 220ms, removed after play). Caches (list/thread/members/contacts) on `app.cache`, 90s SWR; clients paginate (`$top=50` chats, `$top=30` messages) and batch (presence, contacts).
+
+### Chat capability + Mail/Calendar/shell UX (2026-06-15)
+- **New Chat capability** (`chat_view.py`, `chat_compose.py`), 4th alongside Files/Mail/Calendar. Teams chat = work/school MS (delegated `Chat.ReadWrite`); Google Chat = Workspace-only (degrades for consumer Gmail). Tab + Teams/Shared mail sources hidden for personal accounts (`Account.is_personal` email-domain heuristic).
+- Chat list: 1:1/group/meeting; unread = bold + accent dot (Teams `viewpoint.lastMessageReadDateTime`, never when `from_me` or marker missing — was a false-unread bug); "You:" prefix; conversational dates; pagination; name filter + server-side `/search/query` message search.
+- Thread: bubbles, older-message pagination, pins to bottom on open; empty/system messages skipped.
+- Compose: Enter sends (no button); attach (paperclip) + Ctrl+V paste stage thumbnails; images as Teams **inline hosted content** (base64); `@mentions` build HTML `<at id>` tags + `mentions[]`.
+- Per-message right-click: reaction (`setReaction`), Reply (inline quote), Forward (new chat prefilled), Copy, Select (multi-select), Download, Copy link, Edit/Delete (own). Inline images downloaded with bearer token (hosted-content URLs 401 on plain open), downscaled to 240px (scale the *pixbuf*, not `set_size_request`); relative `../hostedContents/..` resolved to absolute.
+- New chat (`ChatComposeWindow`, an `EditorWindow`): To autocomplete; `start_chat` creates/reuses 1:1. Group chat: `start_group_chat`, header people-button roster popover to rename/add/remove. Presence dots (`POST /communications/getPresencesByUserId`, `Presence.Read`, 60s batch, patched in place).
+- Notifications: chat polled (`_poll_chat`), popup + deep-link `app.notify-open-chat` → `window.open_chat`; sidebar red chat-unread badge (`_chat_unread`/`chat_unread_count`/`mark_chat_read`).
+- Client chat methods (Graph + Google, same shapes): `list_chats[_page]`, `list_chat_messages[_page]`, `list_chat_members`, `send_chat_message`/`_images`/`_html`, `fetch_bytes`, `edit`/`delete_chat_message`, `set_reaction`, `start_chat`, `search_messages`. Google raises `GoogleError` for Teams-only writes. `SCOPES_CHAT` added (`Chat.ReadWrite` / Workspace chat scopes).
+- **Mail/Calendar/shell**: per-account sidebar unread badges (mail accent pill via `inbox_unread()` + red chat pill); mail pagination + Unread virtual folder + per-account folder memory + multi-select/arrow-nav/search; calendar "● Live now" + multi-select/arrow-nav/search + event-id deep-link fix; teal accent `#2190a4` at APPLICATION priority.
+
+### Inline event edit + refactor + bug audit (2026-06-15, earlier)
+- **Inline event edit**: Edit (✏️) toggles `EventDetailWindow` detail into an inline form (subject, all-day, day, start/end, location, removable attendees, description) → `client.update_event`. `get_event` returns attendees with `email`. Description prefills plain-text bodies only (HTML-bodied start blank). `EventWindow` still used for New.
+- Refactor: shared event date/time helpers → `widgets/event_time.py` (`iso_to_local_naive`, `parse_hhmm`, `local_to_utc_iso`).
+- Bug fixes: `update_event` treats `attendees=None` as "leave" but a list (incl `[]`) as "set" (clearing attendees now works); inline multi-day events keep their day span (`_edit_day_span`); `notifications.py` prime timer is now a one-shot `_prime_once` returning `False` (was sharing `_tick` → fired forever, doubling poll traffic).
+
+### Rebrand, packaging, calendar redesign (2026-06-14)
+- **App-ID rebrand**: `com.fiberelements.Cloudy` → `io.github.sha5b.Cloudy` (data files, schema id, D-Bus name/paths, icons, gresource prefix, Makefile); author → Shahab Nedaei (sha5b). Best-effort dconf migration in `application._migrate_legacy_settings` (works on host/RPM; Flatpak runtime has no `dconf` CLI → re-add accounts there once).
+- **Packaging**: Fedora RPM (`packaging/cloudy.spec`, noarch, meson) `make rpm`/`srpm`; Flatpak bundle `make flatpak-bundle`; `make release` → `release/` (RPM + single-file `.flatpak`) and installs the bundle. Credentials baked at build via `meson.options` → generated GSettings vendor override (`data/cloudy.gschema.override.in`), read from `.env`; source ships empty defaults; no secrets in git.
+- **Host-visible Flatpak mounts**: rclone runs on the host via `flatpak-spawn --host` into `~/.local/share/cloudy/mounts` (manifest grants `--talk-name=org.freedesktop.Flatpak` + `--filesystem`); `mounts.active_mounts()` reads `/proc/self/mountinfo` (stall-proof; fixed the dashboard hang).
+- **Nautilus**: quick Unmount menu item (file view, not sidebar — API can't touch sidebar bookmarks); extension auto-installs (RPM → system path; Flatpak → copied to host on first run via `provisioner.ensure_host_nautilus_extension`).
+- **Calendar redesign**: month grid (`widgets/month_grid.py`) in Calendar tab + Dashboard; past events; clicking an event opens a non-modal `event_window.py` (detail + RSVP + delete + Edit). Meeting attendee response tracker (pills grouped by status via `Adw.WrapBox`).
+- **Per-account mountpoints** (`mounts.mount_base_for`): each account's drives mount under their own folder so same-named drives don't collide; D-Bus status walks ancestors for the nesting.
+- Dashboard cached (SWR) + Refresh; contacts autocomplete (MS People API `/me/people`+`/me/contacts` + `People.Read`; Google connections + otherContacts + `contacts.other.readonly` — both need re-sign-in); account add auto-enables the provider's module; WebKit blank-mail fix (`WEBKIT_DISABLE_DMABUF_RENDERER=1`); design system (`data/style.css`, `widgets/metrics.py` 4px scale, `source_nav.status_page`/`loading_box`, `.cloudy-meta`/`-day`/`-chip`/`-pill`/`-section`).
+
+---
 
 ## Build / run / test
 ```bash
-cd <repo>
 make run            # meson build+install into _install, then launch ./_install/bin/cloudy
 make build|test|lint|clean
+make test-unit      # just the headless logic suite (fast, no build/schema)
 make flatpak flatpak-run   # sandboxed (org.gnome.Platform 50)
+make release        # builds RPM + Flatpak bundle and reinstalls the bundle
 ```
-- Dev toolchain here is **user-space**: `meson`/`ninja` via `pip --user`
-  (`export PATH="$HOME/.local/bin:$PATH"`); `blueprint-compiler` auto-fetched via
-  the wrap; `msal` via `pip --user`. `rclone` is **auto-provisioned** (rootless)
-  into `~/.local/share/cloudy/bin/rclone` on first run; also bundled in the Flatpak.
-- The app is **single-instance** (GApplication) — quit the running one before
-  relaunching, or a new launch just hands off and exits 0.
-- `make lint` is just `py_compile` (no pyflakes/ruff installed here). Useful extra
-  checks: `python3 -m py_compile <files>`; a **headless import smoke test**
-  (`gi.require_version` then `importlib.import_module` each widget module —
-  catches missing imports/NameErrors without a display). NOTE: `window.py` can't
-  be imported standalone (its `Gtk.Template` needs the compiled gresource); skip
-  it in smoke tests. `meson test` runs 4 validation tests (desktop/schema/
-  metainfo/blueprint).
-- **Driving the GUI from a headless/agent shell fails** (the Wayland app handoff
-  signals and kills the wrapper shell, exit 144) — verify via build + tests +
-  import/logic smoke, then ask the user to `make run` to eyeball.
+- Dev toolchain is **user-space**: `meson`/`ninja` via `pip --user` (`export PATH="$HOME/.local/bin:$PATH"`); `blueprint-compiler` auto-fetched via the wrap; `msal` via `pip --user`. `rclone` auto-provisioned (rootless) into `~/.local/share/cloudy/bin/rclone` on first run; also bundled in the Flatpak.
+- `meson test` runs 4–5 validation tests (desktop/schema/metainfo/blueprint) + the unit suite.
 
-## Credentials (already set up locally; repo is public-safe)
-- **Microsoft**: multi-tenant Entra client ID `dcd8ee18-6e62-4c5a-b01f-86f9556f8fed`
-  (public client — not a secret). **Google**: Desktop OAuth client.
-- Real values live **outside git** in `.env` (repo root, gitignored) and/or
-  `~/.config/cloudy/secrets.env`, loaded into `CLOUDY_*` env on startup by
-  `core/credentials.py`. The committed repo contains **zero** real IDs/secrets.
-  `.env.example` is the template. See `docs/SECRETS.md`.
-- Env vars: `CLOUDY_MS_CLIENT_ID`, `CLOUDY_GOOGLE_CLIENT_ID`,
-  `CLOUDY_GOOGLE_CLIENT_SECRET` (also GSettings keys; env wins).
-- ⚠️ The Google client secret was pasted in chat during setup — **rotate it**
-  in Google Cloud Console before any public release.
+## Credentials (set up locally; repo is public-safe)
+- **Microsoft**: multi-tenant Entra public client ID `dcd8ee18-6e62-4c5a-b01f-86f9556f8fed` (not a secret). **Google**: Desktop OAuth client.
+- Real values live outside git in `.env` (gitignored) and/or `~/.config/cloudy/secrets.env`, loaded into `CLOUDY_*` env on startup by `core/credentials.py`. `.env.example` is the template (see `docs/SECRETS.md`). Env vars `CLOUDY_MS_CLIENT_ID`, `CLOUDY_GOOGLE_CLIENT_ID`, `CLOUDY_GOOGLE_CLIENT_SECRET` override the matching GSettings keys.
 
 ## How it works (key decisions)
-- **Auth**: system browser + loopback. Microsoft = MSAL (`core/auth/msal_graph.py`);
-  Google = hand-rolled loopback+PKCE on urllib (`core/auth/google_oauth.py`).
-  Tokens in **libsecret** (`core/secrets.py`). Sign-in requests **all** scopes up
-  front (Files+Teams+Groups+Mail+Calendar+**Mail.ReadWrite.Shared**) so one
-  consent covers everything, **including shared mailboxes/calendars**.
-- **Shared/group sources**: Graph `list_shared_folders` / `list_shared_events`
-  use `/users/{address}` + `Mail.ReadWrite.Shared`; group mail/calendars use
-  `/groups/{id}` + `Group.Read.All`. IDs are prefixed `shared:<addr>:` /
-  `group:<id>:` so `get_message`/`get_event` route back correctly. Accessing your
-  **own** address as a "shared" source returns Graph 403 ErrorAccessDenied —
-  that's expected (use the **Me** source for your own mailbox).
-- **Mail & Calendar share one source model** (Microsoft only): **Me / Teams /
-  Shared** tabs. The common scaffolding lives in **`widgets/source_nav.py`**:
-  `SourceTabs`, `run_async(work, on_done)` (the off-thread→idle_add helper used by
-  every view), `clear_listbox`, `message_row`/`action_row` placeholders,
-  `is_scope_error`, `present_add_shared_dialog`, and the **pin** helpers
-  (`toggle_pin`/`is_pinned`/`find_pin`). When a shared/group call fails for lack
-  of scope, the view shows a **Re-sign in** action row (re-consent grants the new
-  scope; everyday mail keeps working).
-- **Files = rclone mounts** (`modules/microsoft365/mounts.py`): rclone does its
-  **own** browser auth (built-in app id → no registration), reused per account.
-  Mount → FUSE network drive + a GTK sidebar bookmark → appears in Nautilus.
-  **It's a live network drive (two-way), not a synced copy.** Cache mode + mount
-  location come from Settings. **Mount layout** (`mount-layout` setting): either
-  `one-folder` (everything under the global mount location) or `individual` (each
-  account picks its own folder via `Account.mount_location`). `mountpoint_for`/
-  `mount` take an optional `base` override; `account_mount_base(loc)` resolves it.
-- **In-app file browser** (`widgets/file_browser.py`): the Files tab is an
-  `Adw.NavigationView` — **Libraries** (mount toggles) at the root; a *mounted*
-  library row is clickable → pushes a `FileBrowserPage` that lists the mountpoint
-  (folders first, drill in, click a file → opens in the default app). Listing
-  runs off-thread; `recent_changes(roots)` (bounded scan) powers the Dashboard.
-- **Offline sync** (`core/sync.py`): when `default-sync-type` = `full` and an
-  account's per-account toggle is on, `SyncManager` runs `rclone bisync` into
-  `…/cloudy/synced` on a timer. When type = `stream`, the per-account toggle is
-  disabled (mounting stays manual). Streaming auto-mount-on-login is **not** built.
-- **Caching**: `core/cache.py` MemoryCache on `app.cache` (stale-while-
-  revalidate, 90s TTL) for mail/calendar; per-source cache keys; Refresh
-  invalidates per account.
-- **Nautilus**: app exports a D-Bus status service (`core/dbus_service.py`); host
-  extension draws emblems + menu (`make install-nautilus`).
-- **UI shell** (`window.py`): sidebar (Overview + accounts) → per-account
-  `ViewSwitcher` over Files/Mail/Calendar; header Refresh.
-  `open_mail(account, mid)` and `open_account_tab(account, tab)` are deep-link
-  entry points used by the Dashboard. A **turned-off** account (its module
-  disabled) shows "Turned off" in the sidebar and a disabled status page.
-- **Dashboard** (`widgets/dashboard_view.py`): **Pinned** (starred shared/group
-  sources with live counts, click to jump) → **Upcoming** (your calendars) →
-  **Recent mail** → **Recent file changes** (newest edits in mounted/synced dirs).
-- **Preferences** (`preferences.py`), two pages only:
-  - **General** — Mount location · Mount layout · File caching · Sync type
-    (stream/full) · Start at login.
-  - **Accounts** — each account is an `ExpanderRow`: an **on/off switch** for its
-    services (replaces the old Modules tab → `enabled-modules` setting), Sign
-    In/Out, Remove; expands to **Sync files offline** + **Mount location** (both
-    shown but greyed until their General prerequisite is set).
-- **Pinning ("star")**: the ★ button in Mail/Calendar (Teams/Shared sources)
-  toggles `Account.pinned_sources` entries
-  `{kind: mail|calendar, source: shared|teams, id, name}`; the Dashboard renders
-  them.
-
-## Gotchas / conventions (don't relearn the hard way)
-- **Use `source_nav.run_async`** for off-thread work, not raw
-  `threading.Thread`+`GLib.idle_add` — callback signature is `(result, error)`;
-  capture extra ids via a lambda (`lambda res, err: self._on_x(id, res, err)`).
-- **Pango markup**: Adw row/title/StatusPage text is parsed as markup — wrap
-  dynamic text with `widgets/format.esc()`. Mail/agenda lists use plain
-  `Gtk.Label` (immune).
-- **Graph URLs**: encode query values with spaces (e.g. `$orderby=... desc`) or
-  urllib aborts ("URL can't contain control characters").
-- **GSettings**: `Gio.Settings.new()` *aborts the process* if the schema isn't
-  installed — look it up via `SettingsSchemaSource` first (see `mounts._setting`).
-  New schema keys need `make build` (recompiles + reinstalls the schema).
-- **New scopes need re-consent**: existing accounts must re-sign-in (Preferences →
-  Accounts → Sign Out, then Sign In) to pick up newly-added scopes. The Mail/
-  Calendar views surface this with an inline **Re-sign in** button on scope errors.
-- **`Account` model** (`core/account_registry.py`): `from_dict` tolerates missing
-  keys, so adding fields is safe; removing a field just drops it on next save
-  (this is how `group_calendars` was retired). Current extra fields:
-  `full_sync`, `mount_location`, `shared_mailboxes`, `pinned_sources`.
-- **Network-mount scans are dangerous**: `os.walk` over a FUSE mount can stall /
-  trigger downloads. `recent_changes` is bounded by `max_scan`; keep any new
-  scanning bounded too.
-- **Module on/off is per-provider**: the Accounts on/off switch toggles the whole
-  `module_id` (`enabled-modules`), so all accounts of a provider share it.
-- **Google "Testing" publishing status** expires refresh tokens after 7 days;
-  publish to production for longer-lived use.
-- **meson install doesn't prune**: `make install` removes the installed package
-  tree first so renamed/removed modules don't linger.
-
-## Status: done (working, all builds + 4 meson tests green)
-Sign-in (MS + Google), Files (OneDrive + Teams + Google My Drive) with
-Mount↔Unmount **and an in-app file browser**, Mail and Calendar both with
-**Me/Teams/Shared** sources + shared-mailbox add + **★ pin to Dashboard** + inline
-re-sign-in on scope errors, message reader, event detail + RSVP, **reworked
-Dashboard** (pinned/upcoming/mail/file-changes), **reorganized Preferences**
-(General vs Accounts; per-account services on/off, offline-sync toggle, mount
-location; **Modules tab removed**), mount layout (one-folder/individual) +
-per-account mount location, caching + Refresh, rclone auto-provision, secrets,
-Nautilus D-Bus + extension. Shared view code deduped into `widgets/source_nav.py`.
-
-## Next steps (the backlog)
-1. **Verify shared/group sources end-to-end** against a *real* shared mailbox /
-   group the user has delegated access to (not their own address — that 403s).
-2. **Streaming sync activation** — make the per-account toggle, when sync type =
-   `stream`, actually auto-mount the account's libraries at startup (today it's
-   disabled; only `full` bisync is wired).
-3. **Calendar grid** — real month/agenda view (currently a 7-day list).
-4. **Live transfer status** — mount rclone with `--rc`, poll `core/stats` for
-   ↓/↑ activity; feed the D-Bus service so Nautilus shows transferring/online.
-   This is also the better long-term source for the Dashboard "Recent file
-   changes" than walking the mount.
-5. **Compose/reply** for mail; **file ops** (rename/delete/upload) in the browser.
-6. **Multi-account-per-module**: the Accounts on/off switch currently toggles the
-   whole module (all accounts of that provider). If multiple same-provider
-   accounts become common, add a real per-account `enabled` flag.
+- **Auth**: system browser + loopback. MS = MSAL (`core/auth/msal_graph.py`); Google = loopback+PKCE on urllib (`core/auth/google_oauth.py`). Tokens in libsecret (`core/secrets.py`). Sign-in requests **all** scopes up front (Files+Teams+Channels+Notes+Groups+Mail+Calendar+Chat+`Mail.ReadWrite.Shared`+People) so one consent covers everything.
+- **Shared/group sources** (MS): `list_shared_folders`/`list_shared_events` use `/users/{address}` + `Mail.ReadWrite.Shared`; group mail/calendars use `/groups/{id}` + `Group.Read.All`. IDs prefixed `shared:<addr>:` / `group:<id>:` so `get_message`/`get_event` route back. Mail & Calendar share the Me/Teams/Shared model; scaffolding in `widgets/source_nav.py` (`SourceTabs`, `run_async`, `clear_listbox`, placeholders, `is_scope_error`, `present_add_shared_dialog`, pin helpers).
+- **Files = rclone mounts** (`modules/microsoft365/mounts.py`): rclone does its own browser auth (built-in app id), reused per account. Mount → live two-way FUSE network drive + GTK sidebar bookmark → appears in Nautilus. **Mount layout** (`mount-layout`): `one-folder` (global mount location) or `individual` (per-account `Account.mount_location`); `mountpoint_for`/`mount` take an optional `base`, `account_mount_base(loc)` resolves it.
+- **In-app browser** (`widgets/file_browser.py`): Files tab is an `Adw.NavigationView` — Libraries (mount toggles) at root; a mounted library row pushes a `FileBrowserPage`. Listing off-thread; `recent_changes(roots)` (bounded) powers the Dashboard.
+- **Offline sync** (`core/sync.py`): `default-sync-type=full` + per-account toggle → `rclone bisync` into `…/cloudy/synced` on a timer. `stream` disables the per-account toggle (mounting stays manual); auto-mount-on-login not built.
+- **Caching**: `core/cache.py` MemoryCache on `app.cache` (SWR, 90s TTL, persisted to disk); Refresh invalidates per account.
+- **Nautilus**: D-Bus status service (`core/dbus_service.py`); host extension draws emblems + menu (`make install-nautilus`).
+- **UI shell** (`window.py`): sidebar (Overview + accounts) → per-account `ViewSwitcher` over the capability tabs; `open_mail(account, mid)` / `open_account_tab(account, tab)` deep-link entry points. A turned-off account shows "Turned off".
+- **Application lifecycle** (`application.py`): `CloudyApplication(Adw.Application)` with `HANDLES_OPEN` (system Mail/Calendar handler): `do_open` routes `mailto:` → `ComposeWindow`, `.ics` → `EventWindow`. Owns registry, cache, engine, secrets, sync_manager, notifier. Background mode (`run-in-background`, default off): close-request hides + `app.hold()`.
+- **Preferences** (`preferences.py`): **General** (Mount location · layout · caching · sync type · Start at login + slimmed Background group), **Notifications** (Alerts + Quiet hours), **Accounts** (per-account `ExpanderRow`: services on/off = `enabled-modules`, Sign In/Out, Remove; Sync files offline + Mount location).
+- **Pinning ("star")**: ★ in Mail/Calendar/Teams/Chat toggles `Account.pinned_sources` `{kind, source, id, name, **extra}`; Dashboard renders them.
 
 ## Layout
-`src/cloudy/{main,application,window,preferences,account_dialog}.py`,
-`core/` (interfaces, plugin_engine, account_registry, secrets, cache,
-credentials, provisioner, dbus_service, sync, auth/), `modules/microsoft365/`
-(graph, files, mounts, abraunegg), `modules/gmail/` (google_client),
-`widgets/` (files/mail/calendar/dashboard/message/event views, **source_nav**,
-**file_browser**, clients, graph_helper, format). Data in `data/` (gschema,
-desktop, metainfo, blueprints, icons), Flatpak manifest
-`io.github.sha5b.Cloudy.yml`.
-```
-widgets/source_nav.py   shared: SourceTabs, run_async, listbox/placeholder
-                        helpers, is_scope_error, add-shared dialog, pin helpers
-widgets/file_browser.py in-app browser (FileBrowserPage) + recent_changes()
-```
+`src/cloudy/{main,application,window,preferences,account_dialog}.py`; `core/` (interfaces, plugin_engine, account_registry, secrets, cache, credentials, provisioner, dbus_service, sync, notifications, ics, eds_publish, gi_compat, auth/); `modules/microsoft365/` (graph, files, mounts, abraunegg); `modules/gmail/` (google_client); `widgets/` (files/mail/calendar/dashboard/message/event/chat/teams/activity/media views, source_nav, file_browser, clients, editor_window, format, event_time, command_palette, month_grid, metrics). Data in `data/` (gschema, desktop, metainfo, blueprints, icons); Flatpak manifest `io.github.sha5b.Cloudy.yml`.

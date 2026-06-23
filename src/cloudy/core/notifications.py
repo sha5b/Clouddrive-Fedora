@@ -69,6 +69,7 @@ class NotificationManager:
         self._seen_mail: dict[str, set] = {}      # account id -> {message id}
         self._primed: set = set()                 # accounts whose baseline is set
         self._notified_events: set = set()        # f"{acct}:{event id}"
+        self._seen_events: dict[str, set] = {}     # account id -> {event id} last poll
         self._unread: dict[str, int] = {}         # account id -> inbox unread count
         self._seen_chat: dict[str, dict] = {}     # account id -> {chat id: last_at}
         self._chat_unread: dict[str, set] = {}    # account id -> {chat id with new msgs}
@@ -315,10 +316,14 @@ class NotificationManager:
         fresh = [m for m in messages
                  if m.get("id") not in seen and not m.get("is_read", True)]
         seen.update(ids)
-        # Live-update the open mail list (like the badge, this happens even when
-        # the banner is suppressed by DND/quiet hours — nothing is interruptive).
-        if fresh and win is not None and hasattr(win, "refresh_account_mail"):
-            win.refresh_account_mail(account.id)
+        # Live-update the open mail list and Activity feed (like the badge, this
+        # happens even when the banner is suppressed by DND/quiet hours — nothing
+        # is interruptive).
+        if fresh and win is not None:
+            if hasattr(win, "refresh_account_mail"):
+                win.refresh_account_mail(account.id)
+            if hasattr(win, "refresh_account_activity"):
+                win.refresh_account_activity(account.id)
         immediate = []
         for msg in fresh:
             # Important mail interrupts (tier 1); ordinary mail is ambient (tier 2).
@@ -370,6 +375,23 @@ class NotificationManager:
         if error or not events:
             return False
         now = datetime.now(timezone.utc)
+        # An event newly inside the next-hour window → tell an open calendar /
+        # Activity feed to refresh, so it appears (and can go "Live now") without
+        # a manual reload. The first poll only learns the baseline.
+        seen = self._seen_events.setdefault(account.id, set())
+        ids = {ev.get("id") for ev in events}
+        first_time = f"cal:{account.id}" not in self._primed
+        new_ids = ids - seen
+        seen.update(ids)
+        if first_time:
+            self._primed.add(f"cal:{account.id}")
+        elif new_ids:
+            win = self._app.props.active_window
+            if win is not None:
+                if hasattr(win, "refresh_account_calendar"):
+                    win.refresh_account_calendar(account.id)
+                if hasattr(win, "refresh_account_activity"):
+                    win.refresh_account_activity(account.id)
         for ev in events:
             if ev.get("all_day"):
                 continue
@@ -392,14 +414,46 @@ class NotificationManager:
     def _notify_event(self, account, ev, start) -> None:
         subject = ev.get("subject", "") or _("(no title)")
         when = start.astimezone().strftime("%H:%M")
-        note = Gio.Notification.new(_("Upcoming event"))
+        join_url = ev.get("online_url", "")
+        note = Gio.Notification.new(
+            _("Meeting starting") if join_url else _("Upcoming event"))
         note.set_body(_("%(title)s at %(time)s") % {"title": subject, "time": when})
         note.set_icon(self._type_icon("x-office-calendar-symbolic"))
-        note.set_priority(Gio.NotificationPriority.HIGH)
+        # An online meeting reads like an incoming call: urgent (resident) banner,
+        # a one-tap Join that opens the meeting in the browser, and a ring cue.
+        # Clicking the body still opens the event; ignoring/closing it = decline.
+        note.set_priority(Gio.NotificationPriority.URGENT if join_url
+                          else Gio.NotificationPriority.HIGH)
         payload = GLib.Variant("s", f"{account.id}\x1f{ev.get('id', '')}")
         note.set_default_action(
             Gio.Action.print_detailed_name("app.notify-open-calendar", payload))
+        if join_url:
+            note.add_button(_("Join"), Gio.Action.print_detailed_name(
+                "app.notify-join-meeting", GLib.Variant("s", join_url)))
+            self._play_ring()
         self._app.send_notification(f"event-{account.id}-{ev.get('id', '')}", note)
+
+    def _play_ring(self) -> None:
+        """Best-effort 'incoming call' cue for a starting online meeting. Plays
+        the freedesktop ``phone-incoming-call`` theme sound via GSound when it's
+        available; a missing GSound (e.g. a minimal runtime) just means silence."""
+        if not hasattr(self, "_gsound"):
+            self._gsound = None
+            from .gi_compat import require
+            if require("GSound", ("1.0",)) is not None:
+                try:
+                    from gi.repository import GSound
+                    ctx = GSound.Context()
+                    ctx.init(None)
+                    self._gsound = ctx
+                except Exception:  # noqa: BLE001 - sound is non-essential
+                    self._gsound = None
+        if self._gsound is None:
+            return
+        try:
+            self._gsound.play_simple({"event.id": "phone-incoming-call"}, None)
+        except Exception:  # noqa: BLE001 - never let a sound hiccup break polling
+            pass
 
     # -- chat (Teams / Google Chat) --------------------------------------
     def _poll_chat(self, account) -> None:
@@ -456,8 +510,11 @@ class NotificationManager:
         # same liveness the Mail list gets.
         if any_changed:
             win = self._app.props.active_window
-            if win is not None and hasattr(win, "refresh_account_chat"):
-                win.refresh_account_chat(account.id)
+            if win is not None:
+                if hasattr(win, "refresh_account_chat"):
+                    win.refresh_account_chat(account.id)
+                if hasattr(win, "refresh_account_activity"):
+                    win.refresh_account_activity(account.id)
         for chat, tier in to_notify[:_MAX_MAIL_PER_TICK]:
             self._notify_chat(account, chat, tier)
         return False
