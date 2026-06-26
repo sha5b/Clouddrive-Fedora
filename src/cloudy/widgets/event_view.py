@@ -47,6 +47,15 @@ def _norm_response(raw: str) -> str:
 def _open_uri(uri: str) -> None:
     if not uri:
         return
+    # Gtk.show_uri routes through the OpenURI portal under Flatpak, where
+    # Gio.AppInfo.launch_default_for_uri finds no handler and silently no-ops —
+    # which is why "Join meeting" did nothing in the sandboxed build. Fall back
+    # to AppInfo off-sandbox.
+    try:
+        Gtk.show_uri(None, uri, 0)  # 0 == GDK_CURRENT_TIME
+        return
+    except Exception:  # noqa: BLE001
+        pass
     try:
         Gio.AppInfo.launch_default_for_uri(uri, None)
     except Exception:  # noqa: BLE001

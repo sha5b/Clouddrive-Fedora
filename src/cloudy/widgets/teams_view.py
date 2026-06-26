@@ -31,6 +31,7 @@ from .source_nav import (
     action_row,
     attachment_chip,
     clear_listbox,
+    friendly_error,
     is_muted,
     is_pinned,
     is_scope_error,
@@ -712,7 +713,7 @@ class TeamsView(Adw.Bin):
 
     def _after_send(self, channel_id, error) -> bool:
         if error is not None:
-            self._window.add_toast(_("Couldn't send: %s") % error)
+            self._window.add_toast(_("Couldn't send: %s") % friendly_error(error))
             return False
         self._cache.invalidate(prefix=self._conv_key())
         if channel_id == self._channel_id:
@@ -1061,7 +1062,7 @@ class TeamsView(Adw.Bin):
 
     def _on_page_saved(self, page, error) -> bool:
         if error is not None:
-            self._window.add_toast(_("Couldn't save: %s") % error)
+            self._window.add_toast(_("Couldn't save: %s") % friendly_error(error))
             self._after_notes_change(page)
             return False
         # OneNote writes are async; give the service a moment, then refresh.

@@ -21,6 +21,7 @@ from .source_nav import (
     SourceTabs,
     action_row,
     clear_listbox,
+    friendly_error,
     is_pinned,
     is_scope_error,
     message_row,
@@ -202,6 +203,18 @@ class MailView(Adw.Bin):
         )
         self._reply_btn.connect("clicked", self._on_reply_clicked)
         content_header.pack_start(self._reply_btn)
+        self._reply_all_btn = Gtk.Button(
+            icon_name="mail-reply-all-symbolic", tooltip_text=_("Reply all"),
+            sensitive=False,
+        )
+        self._reply_all_btn.connect("clicked", self._on_reply_all_clicked)
+        content_header.pack_start(self._reply_all_btn)
+        self._forward_btn = Gtk.Button(
+            icon_name="mail-forward-symbolic", tooltip_text=_("Forward"),
+            sensitive=False,
+        )
+        self._forward_btn.connect("clicked", self._on_forward_clicked)
+        content_header.pack_start(self._forward_btn)
         content_tb = Adw.ToolbarView()
         content_tb.add_top_bar(content_header)
         content_tb.set_content(self._reader)
@@ -577,7 +590,7 @@ class MailView(Adw.Bin):
         if error or folder != self._folder_id or query != self._search_query:
             self._sync_more_row()  # restore the button (drop the loading state)
             if error:
-                self._window.add_toast(_("Couldn't load more: %s") % error)
+                self._window.add_toast(_("Couldn't load more: %s") % friendly_error(error))
             return False
         messages, next_token = result
         self._next_token = next_token
@@ -845,6 +858,8 @@ class MailView(Adw.Bin):
         # Group conversations are read-only (no per-user delete).
         self._delete_btn.set_sensitive(not str(mid).startswith("group:"))
         self._reply_btn.set_sensitive(False)  # enabled once the body loads
+        self._reply_all_btn.set_sensitive(False)
+        self._forward_btn.set_sensitive(False)
         self._reader.set_child(self._reader_loading())
         self._split.set_show_content(True)  # reveal the reader when collapsed
 
@@ -904,6 +919,11 @@ class MailView(Adw.Bin):
             on_rsvp=self._on_invite_rsvp if msg.get("invite") else None))
         self._open_msg = msg
         self._reply_btn.set_sensitive(True)
+        # Reply-all and Forward only make sense for a real mailbox message, not a
+        # read-only group-conversation thread (group: ids).
+        is_group = str(mid).startswith("group:")
+        self._reply_all_btn.set_sensitive(not is_group)
+        self._forward_btn.set_sensitive(not is_group)
         self._mark_read(mid)
         return False
 
@@ -941,7 +961,7 @@ class MailView(Adw.Bin):
 
     def _on_invite_replied(self, action, error) -> bool:
         if error:
-            self._window.add_toast(_("Couldn't send response: %s") % error)
+            self._window.add_toast(_("Couldn't send response: %s") % friendly_error(error))
             return False
         # Reflect the new answer in the open reader without a full reload.
         self._window.add_toast(_("Response sent."))
@@ -991,9 +1011,15 @@ class MailView(Adw.Bin):
                              read_receipt=read_receipt)
 
         ComposeWindow(self._window, self._account, from_label=self._from_label(),
-                      send_fn=send).present()
+                      send_fn=send, body=self._signature_block()).present()
 
     def _on_reply_clicked(self, _btn) -> None:
+        self._open_reply(reply_all=False)
+
+    def _on_reply_all_clicked(self, _btn) -> None:
+        self._open_reply(reply_all=True)
+
+    def _open_reply(self, *, reply_all: bool) -> None:
         mid = self._open_mid
         if not mid:
             return
@@ -1009,13 +1035,80 @@ class MailView(Adw.Bin):
             from .clients import build_account_client
 
             client = build_account_client(self._window.get_application(), self._account)
-            client.reply_mail(mid, body, html=True, attachments=attachments,
-                              read_receipt=read_receipt)
+            client.reply_mail(mid, body, reply_all=reply_all, html=True,
+                              attachments=attachments, read_receipt=read_receipt)
 
         ComposeWindow(
             self._window, self._account, from_label=self._account.display_name,
-            send_fn=send, to=meta.get("from", ""), subject=subject, title=_("Reply"),
+            send_fn=send, to=meta.get("from", ""), subject=subject,
+            body=self._signature_block(),
+            title=_("Reply all") if reply_all else _("Reply"),
         ).present()
+
+    def _on_forward_clicked(self, _btn) -> None:
+        mid = self._open_mid
+        if not mid:
+            return
+        from .compose_view import ComposeWindow
+
+        msg = getattr(self, "_open_msg", None) or {}
+        subject = msg.get("subject", "")
+        if subject and not subject.lower().startswith(("fwd:", "fw:")):
+            subject = _("Fwd: %s") % subject
+        # The compose editor takes a plain-text prefill (it produces the HTML on
+        # send), so quote the original as text and re-attach its files so the
+        # forward actually carries them.
+        body = self._signature_block() + self._forward_quote(msg)
+        atts_meta = [a for a in (msg.get("attachments") or []) if a.get("id")]
+        source, address = self._send_context()
+
+        def send(to, subject, body, *, cc=None, bcc=None,
+                 attachments=None, importance="normal", read_receipt=False):
+            from .clients import build_account_client
+
+            client = build_account_client(self._window.get_application(), self._account)
+            fwd_atts = list(attachments or [])
+            for a in atts_meta:
+                try:
+                    data = client.fetch_mail_attachment(mid, a["id"])
+                    fwd_atts.append({
+                        "name": a.get("name") or _("attachment"),
+                        "content_type": a.get("content_type") or "application/octet-stream",
+                        "data": data})
+                except Exception:  # noqa: BLE001 - skip one we can't fetch
+                    pass
+            client.send_mail(to=to, subject=subject, body=body, source=source,
+                             address=address, cc=cc, bcc=bcc, html=True,
+                             attachments=fwd_atts, importance=importance,
+                             read_receipt=read_receipt)
+
+        ComposeWindow(self._window, self._account, from_label=self._from_label(),
+                      send_fn=send, subject=subject, body=body,
+                      title=_("Forward")).present()
+
+    @staticmethod
+    def _forward_quote(msg: dict) -> str:
+        """A plain-text quote of the forwarded message (header + body)."""
+        from .message_view import _to_text
+
+        lines = [
+            "",
+            "---------- " + _("Forwarded message") + " ----------",
+            _("From: %s") % (msg.get("from", "") or ""),
+            _("Date: %s") % (msg.get("received", "") or ""),
+            _("Subject: %s") % (msg.get("subject", "") or ""),
+            _("To: %s") % (msg.get("to", "") or ""),
+            "",
+            _to_text(msg.get("body", "") or ""),
+        ]
+        return "\n".join(lines)
+
+    def _signature_block(self) -> str:
+        """The account's signature as a plain-text block to prefill the composer
+        (empty when none is set). Leads with blank lines so the cursor/new text
+        sits above it."""
+        sig = (getattr(self._account, "signature", "") or "").strip()
+        return ("\n\n" + sig + "\n") if sig else ""
 
     # -- write-back: mark read / delete -----------------------------------
     def _mark_read(self, mid) -> None:
@@ -1025,6 +1118,13 @@ class MailView(Adw.Bin):
                 return  # already read; no write needed
             cached["is_read"] = True  # also updates the cached list (same dict)
             self._refresh_row(mid, cached)
+            # Reflect the read in the sidebar/tab unread badge right away. The
+            # badge counts the personal inbox only, so don't decrement it for a
+            # shared mailbox / non-inbox folder (the next poll re-syncs anyway).
+            if self._source == "me" and self._folder_id in (self._inbox_id, "unread"):
+                notifier = getattr(self._window.get_application(), "notifier", None)
+                if notifier is not None and hasattr(notifier, "mark_mail_read"):
+                    notifier.mark_mail_read(self._account.id, mid)
 
         def work():
             from .clients import build_account_client
@@ -1059,9 +1159,16 @@ class MailView(Adw.Bin):
     def _delete_message(self, mid) -> None:
         """Optimistically drop a message's row and delete it on the server."""
         row = self._rows_by_id.pop(mid, None)
-        self._messages_by_id.pop(mid, None)
+        cached = self._messages_by_id.pop(mid, None)
         if row is not None:
             self._list.remove(row)
+        # Deleting an unread inbox message also clears it from the unread badge.
+        if (cached is not None and not cached.get("is_read", True)
+                and self._source == "me"
+                and self._folder_id in (self._inbox_id, "unread")):
+            notifier = getattr(self._window.get_application(), "notifier", None)
+            if notifier is not None and hasattr(notifier, "mark_mail_read"):
+                notifier.mark_mail_read(self._account.id, mid)
 
         def work():
             from .clients import build_account_client
@@ -1081,6 +1188,6 @@ class MailView(Adw.Bin):
         return False
 
     def _delete_failed(self, error) -> bool:
-        self._window.add_toast(_("Couldn't delete: %s") % error)
+        self._window.add_toast(_("Couldn't delete: %s") % friendly_error(error))
         self._load_async()  # the optimistic removal was wrong; restore from server
         return False

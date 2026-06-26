@@ -10,6 +10,8 @@ shared-mailbox add dialog, and scope-error detection.
 
 from __future__ import annotations
 
+import json
+import re
 import threading
 from gettext import gettext as _
 from typing import Callable
@@ -150,6 +152,77 @@ SCOPE_HINT = _(
 def is_scope_error(error: str | None) -> bool:
     """True when a call failed for lack of a required scope (vs. a real error)."""
     return bool(error) and "requested scopes" in error
+
+
+_API_ERROR_RE = re.compile(r"^(Graph|Google)\s+(\d+):\s*(.*)$", re.DOTALL)
+
+
+def _api_message(body: str) -> str:
+    """Pull ``error.message`` out of a Microsoft/Google JSON error envelope."""
+    try:
+        data = json.loads(body)
+    except Exception:  # noqa: BLE001 - not JSON; caller falls back to the raw text
+        return ""
+    err = data.get("error") if isinstance(data, dict) else None
+    if isinstance(err, dict):
+        msg = err.get("message")
+        # Google nested form: error.errors[].message
+        if not msg and isinstance(err.get("errors"), list) and err["errors"]:
+            msg = (err["errors"][0] or {}).get("message")
+        return (msg or "").strip()
+    if isinstance(err, str):
+        return err.strip()
+    return ""
+
+
+def friendly_error(error) -> str:
+    """Turn a raw client error (a GraphError/GoogleError string, or any
+    exception) into one concise, human-readable line for a toast.
+
+    Microsoft and Google both wrap failures as ``"Graph <code>: <json>"`` /
+    ``"Google <code>: <json>"``; this unwraps the JSON envelope to the real
+    message, maps common HTTP status codes to plain language, and special-cases
+    the patterns users actually hit. Falls back to a trimmed first line so a toast
+    never dumps a multi-line API blob."""
+    msg = str(error or "").strip()
+    if not msg:
+        return _("Something went wrong. Please try again.")
+    if is_scope_error(msg):
+        return _("Your sign-in needs refreshing — sign out and back in to continue.")
+
+    provider, code, detail = "", None, msg
+    m = _API_ERROR_RE.match(msg)
+    if m:
+        provider = _("Microsoft") if m.group(1) == "Graph" else _("Google")
+        try:
+            code = int(m.group(2))
+        except ValueError:
+            code = None
+        body = m.group(3).strip()
+        detail = _api_message(body) or body
+
+    low = detail.lower()
+    # Patterns worth a specific, actionable message regardless of status code.
+    if "provided payload is invalid" in low or "request payload" in low:
+        return _("The message was rejected — try fewer or smaller attachments "
+                 "(at most 10 per message).")
+    if code == 401:
+        return _("Your sign-in needs refreshing — sign out and back in to continue.")
+    if code == 403:
+        return _("You don't have permission to do that.")
+    if code == 404:
+        return _("That item couldn't be found — it may have been moved or deleted.")
+    if code == 413 or "too large" in low:
+        return _("That's too large to send.")
+    if code == 429:
+        return _("Too many requests right now — please try again in a moment.")
+    if code is not None and code >= 500:
+        who = provider or _("the service")
+        return _("%s is having trouble right now — please try again shortly.") % who
+
+    # Generic: the service's own message (or the raw error), trimmed to one line.
+    line = detail.split("\n", 1)[0].strip()
+    return line[:200] if line else _("Something went wrong. Please try again.")
 
 
 # -- pinned (starred) sources ---------------------------------------------

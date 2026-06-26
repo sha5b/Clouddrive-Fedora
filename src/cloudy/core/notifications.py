@@ -81,6 +81,27 @@ class NotificationManager:
         """Last-polled inbox unread count for an account (0 until first poll)."""
         return self._unread.get(account_id, 0)
 
+    def mark_mail_read(self, account_id: str, message_id: str | None = None) -> None:
+        """Drop the cached inbox unread count by one when the user reads (or
+        deletes) a message, so the sidebar/tab mail badge updates immediately
+        instead of waiting for the next poll. Floors at zero; the next poll
+        re-syncs the exact figure (mirrors how mark_chat_read keeps the chat
+        badge live). Also withdraws that message's desktop notification — GNOME
+        does NOT auto-clear it when you read the mail, so a stale banner would
+        otherwise linger in the tray."""
+        if message_id:
+            try:
+                self._app.withdraw_notification(f"mail-{account_id}-{message_id}")
+            except Exception:  # noqa: BLE001 - withdrawing is best-effort
+                pass
+        current = self._unread.get(account_id, 0)
+        if current <= 0:
+            return
+        self._unread[account_id] = current - 1
+        win = self._app.props.active_window
+        if win is not None and hasattr(win, "set_account_unread"):
+            win.set_account_unread(account_id, self._unread[account_id])
+
     def chat_unread_count(self, account_id: str) -> int:
         """Number of chats with unseen new messages (0 until first poll)."""
         return len(self._chat_unread.get(account_id, ()))

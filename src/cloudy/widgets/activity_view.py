@@ -98,29 +98,36 @@ class ActivityView(Adw.Bin):
             (_("Chats"), _("Recent conversations."),
              [it for it in items if it["kind"] == "chat"]),
         ]
-        # Lay the sections into a responsive multi-column grid (like the
-        # Overview): two columns when there's room, collapsing to one when narrow.
-        flow = Gtk.FlowBox(
-            selection_mode=Gtk.SelectionMode.NONE, homogeneous=True,
-            min_children_per_line=1, max_children_per_line=2,
-            column_spacing=SPACE_L, row_spacing=SPACE_L, valign=Gtk.Align.START)
-        flow.add_css_class("cloudy-section")
-        flow.set_margin_top(SPACE_L)
-        flow.set_margin_bottom(SPACE_L)
-        flow.set_margin_start(SPACE_L)
-        flow.set_margin_end(SPACE_L)
-        for title, description, rows in sections:
-            if not rows:
-                continue
+        # Drop the empty sections; what's left is laid into up to two balanced
+        # columns (like the Overview). Each column is its own vertical box, so a
+        # short section keeps its natural height. (A homogeneous FlowBox — the
+        # previous approach — stretched *every* child to the tallest section's
+        # height, leaving a huge empty gap under each short one.)
+        filled = [(t, d, rows) for t, d, rows in sections if rows]
+        n_cols = min(2, len(filled)) or 1
+        columns = [Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=SPACE_L,
+                           valign=Gtk.Align.START, hexpand=True)
+                   for _ in range(n_cols)]
+        heights = [0] * n_cols
+        for title, description, rows in filled:
+            # Greedy balance: each section joins the currently shortest column.
+            idx = heights.index(min(heights))
             group = Adw.PreferencesGroup(title=title, description=description,
                                          hexpand=True, valign=Gtk.Align.START)
             for item in rows[:30]:
                 group.add(self._row(item))
-            child = Gtk.FlowBoxChild(focusable=False)
-            child.set_child(group)
-            flow.append(child)
+            columns[idx].append(group)
+            heights[idx] += min(len(rows), 30) + 2  # +2 ≈ the title/description
+
+        grid = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=SPACE_L,
+                       homogeneous=n_cols > 1, valign=Gtk.Align.START)
+        grid.add_css_class("cloudy-section")
+        for col in columns:
+            grid.append(col)
+        for side in ("top", "bottom", "start", "end"):
+            getattr(grid, f"set_margin_{side}")(SPACE_L)
         return Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER,
-                                  vexpand=True, child=flow)
+                                  vexpand=True, child=grid)
 
     def _row(self, item: dict) -> Adw.ActionRow:
         row = Adw.ActionRow(title=esc(item["title"]), subtitle=esc(item["subtitle"]))

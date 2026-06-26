@@ -1464,14 +1464,22 @@ class GraphClient:
         self._patch(f"/chats/{chat_id}", {"topic": topic}, SCOPES_CHAT)
 
     def send_chat_html(self, chat_id: str, content_html: str,
-                      mentions=None, images=None) -> dict:
-        """Send an HTML message (carries @mentions and/or inline images).
+                      mentions=None, images=None, file_attachments=None) -> dict:
+        """Send an HTML message (carries @mentions, inline images and/or file
+        attachments).
 
         ``content_html`` already contains the escaped text + any ``<at>`` tags;
-        ``mentions`` is the Graph mentions array; ``images`` is ``[(bytes, ctype)]``."""
+        ``mentions`` is the Graph mentions array; ``images`` is ``[(bytes, ctype)]``
+        (rendered inline as hosted contents); ``file_attachments`` is a list of
+        ``{id, name, contentUrl}`` reference attachments (already uploaded to the
+        user's OneDrive via :meth:`upload_chat_file`)."""
         for i, (data, ctype) in enumerate(images or [], start=1):
             content_html += (
                 f'<img src="../hostedContents/{i}/$value" style="max-width:400px">')
+        # Each reference attachment needs an <attachment> placeholder in the body
+        # whose id matches its entry, or Graph rejects the message.
+        for att in file_attachments or []:
+            content_html += f'<attachment id="{att["id"]}"></attachment>'
         body = {"body": {"contentType": "html", "content": content_html}}
         if mentions:
             body["mentions"] = mentions
@@ -1481,7 +1489,57 @@ class GraphClient:
                 "contentBytes": base64.b64encode(data).decode(),
                 "contentType": ctype or "image/png",
             } for i, (data, ctype) in enumerate(images, start=1)]
+        if file_attachments:
+            body["attachments"] = [{
+                "id": att["id"], "contentType": "reference",
+                "contentUrl": att["contentUrl"], "name": att["name"],
+            } for att in file_attachments]
         return self._post(f"/me/chats/{chat_id}/messages", body, SCOPES_CHAT)
+
+    # Teams stores chat attachments in this OneDrive folder; we do the same so the
+    # files show up alongside the ones Teams itself uploads.
+    _CHAT_FILES_FOLDER = "Microsoft Teams Chat Files"
+
+    def upload_chat_file(self, filename: str, data: bytes,
+                         content_type: str = "") -> dict:
+        """Upload a file to the user's OneDrive 'Microsoft Teams Chat Files'
+        folder and return a reference-attachment dict ``{id, name, contentUrl}``
+        for :meth:`send_chat_html`. This is how non-image files are sent to a
+        chat (images go inline via hosted contents instead)."""
+        name = filename or "file"
+        safe = urllib.parse.quote(name)
+        folder = urllib.parse.quote(self._CHAT_FILES_FOLDER)
+        path = (f"/me/drive/root:/{folder}/{safe}:/content"
+                "?@microsoft.graph.conflictBehavior=rename")
+        item = self._put_bytes(path, data, content_type or "application/octet-stream",
+                               SCOPES_FILES)
+        # Teams keys the <attachment> placeholder on the driveItem eTag's GUID;
+        # fall back to the item id if the eTag isn't in the expected shape.
+        etag = item.get("eTag", "") or ""
+        m = re.search(r"[0-9a-fA-F]{8}-[0-9a-fA-F-]{27,}", etag)
+        att_id = m.group(0) if m else item.get("id", "")
+        return {
+            "id": att_id,
+            "name": item.get("name", name),
+            "contentUrl": item.get("webUrl", ""),
+        }
+
+    def _put_bytes(self, path: str, data: bytes, content_type: str,
+                   scopes: Sequence[str]) -> dict:
+        token = self._token_provider(scopes)
+        if not token:
+            raise GraphError("not signed in (no token for the requested scopes)")
+        req = urllib.request.Request(
+            f"{BASE_URL}{path}", data=data, method="PUT",
+            headers={"Authorization": f"Bearer {token}",
+                     "Content-Type": content_type or "application/octet-stream"})
+        try:
+            with urllib.request.urlopen(req, timeout=300) as resp:
+                raw = resp.read().decode()
+                return json.loads(raw) if raw else {}
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode(errors="replace")
+            raise GraphError(f"Graph {exc.code}: {detail}") from exc
 
     def search_messages(self, query: str, *, limit: int = 25) -> list[dict]:
         """Server-side search across the user's chat messages (Microsoft Search).

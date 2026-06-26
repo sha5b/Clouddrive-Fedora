@@ -288,7 +288,55 @@ class CloudyPreferences(Adw.PreferencesDialog):
         # General is set, so the options are always discoverable).
         row.add_row(self._sync_row(account))
         row.add_row(self._mount_location_row(account))
+        row.add_row(self._signature_row(account))
         return row
+
+    # -- per-account email signature -------------------------------------
+    def _signature_row(self, account) -> Adw.ActionRow:
+        sig = (getattr(account, "signature", "") or "").strip()
+        row = Adw.ActionRow(
+            title=_("Email signature"),
+            subtitle=(sig.splitlines()[0] if sig else _("Not set — added to new mail, replies and forwards")))
+        edit = Gtk.Button(label=_("Edit…"), valign=Gtk.Align.CENTER)
+        edit.connect("clicked", lambda *_: self._edit_signature(account, row))
+        row.add_suffix(edit)
+        return row
+
+    def _edit_signature(self, account, row) -> None:
+        dialog = Adw.Dialog()
+        dialog.set_title(_("Email signature"))
+        dialog.set_content_width(520)
+        dialog.set_content_height(360)
+        view = Gtk.TextView(wrap_mode=Gtk.WrapMode.WORD_CHAR, top_margin=10,
+                            bottom_margin=10, left_margin=10, right_margin=10)
+        view.get_buffer().set_text(getattr(account, "signature", "") or "")
+        scrolled = Gtk.ScrolledWindow(vexpand=True, child=view)
+        cancel = Gtk.Button(label=_("Cancel"))
+        cancel.connect("clicked", lambda *_: dialog.close())
+        save = Gtk.Button(label=_("Save"))
+        save.add_css_class("suggested-action")
+        header = Adw.HeaderBar(show_start_title_buttons=False,
+                               show_end_title_buttons=False)
+        header.pack_start(cancel)
+        header.pack_end(save)
+        toolbar = Adw.ToolbarView()
+        toolbar.add_top_bar(header)
+        toolbar.set_content(scrolled)
+        dialog.set_child(toolbar)
+
+        def do_save(*_a):
+            buf = view.get_buffer()
+            text = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False)
+            account.signature = text.strip()
+            if getattr(self._app, "registry", None) is not None:
+                self._app.registry.update(account)
+            sig = account.signature
+            row.set_subtitle(sig.splitlines()[0] if sig
+                             else _("Not set — added to new mail, replies and forwards"))
+            dialog.close()
+
+        save.connect("clicked", do_save)
+        dialog.present(self)
 
     def _sync_row(self, account) -> Adw.SwitchRow:
         full = self._setting_str("default-sync-type") == "full"

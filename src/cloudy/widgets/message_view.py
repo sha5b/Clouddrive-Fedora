@@ -193,6 +193,26 @@ def html_body_widget(content: str, is_html: bool, inline_images=None) -> Gtk.Wid
     return view if view is not None else _text_fallback(content)
 
 
+def _open_uri_external(uri: str) -> None:
+    """Open a clicked mail link in the user's browser. Prefers ``Gtk.show_uri``,
+    which routes through the OpenURI portal under Flatpak — where
+    ``Gio.AppInfo.launch_default_for_uri`` finds no handler and silently fails,
+    the reason links wouldn't open. Falls back to ``Gio.AppInfo`` off-sandbox."""
+    if not uri:
+        return
+    try:
+        Gtk.show_uri(None, uri, 0)  # 0 == GDK_CURRENT_TIME
+        return
+    except Exception:  # noqa: BLE001 - fall back below
+        pass
+    try:
+        from gi.repository import Gio
+
+        Gio.AppInfo.launch_default_for_uri(uri, None)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _build_webview(html_doc: str):
     """Build the shared sandboxed WebView for a complete HTML document, or None
     if WebKitGTK isn't available on this runtime. Links open in the browser."""
@@ -201,7 +221,7 @@ def _build_webview(html_doc: str):
     if require("WebKit", ("6.0", "6.1")) is None:
         return None  # no WebKitGTK on this runtime
     try:
-        from gi.repository import Gdk, Gio, WebKit
+        from gi.repository import Gdk, WebKit
     except ImportError:
         return None
 
@@ -222,14 +242,14 @@ def _build_webview(html_doc: str):
 
     # Links open in the user's browser; never navigate inside the reader.
     def _on_decide(_view, decision, decision_type):
-        if decision_type == WebKit.PolicyDecisionType.NAVIGATION_ACTION:
+        new_window = decision_type == WebKit.PolicyDecisionType.NEW_WINDOW_ACTION
+        if new_window or decision_type == WebKit.PolicyDecisionType.NAVIGATION_ACTION:
             nav = decision.get_navigation_action()
-            if nav.get_navigation_type() == WebKit.NavigationType.LINK_CLICKED:
-                uri = nav.get_request().get_uri()
-                try:
-                    Gio.AppInfo.launch_default_for_uri(uri, None)
-                except Exception:  # noqa: BLE001
-                    pass
+            clicked = nav.get_navigation_type() == WebKit.NavigationType.LINK_CLICKED
+            # A plain click, or a target="_blank" link (which arrives as a
+            # new-window request — scripting is off, so nothing else handles it).
+            if clicked or new_window:
+                _open_uri_external(nav.get_request().get_uri())
                 decision.ignore()
                 return True
         return False

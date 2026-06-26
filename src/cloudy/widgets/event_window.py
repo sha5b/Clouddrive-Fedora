@@ -25,7 +25,7 @@ from gi.repository import Adw, GLib, Gtk
 from .event_time import iso_to_local_naive, local_to_utc_iso, parse_hhmm
 from .format import esc
 from .metrics import WIN_READ
-from .source_nav import run_async
+from .source_nav import friendly_error, run_async
 
 
 class EventDetailWindow(Adw.Window):
@@ -299,7 +299,7 @@ class EventDetailWindow(Adw.Window):
     def _on_saved(self, _result, error) -> bool:
         self._save_btn.set_sensitive(True)
         if error:
-            self._window.add_toast(_("Couldn't save event: %s") % error)
+            self._window.add_toast(_("Couldn't save event: %s") % friendly_error(error))
             return False
         self._window.add_toast(_("Event saved."))
         if self._on_changed is not None:
@@ -322,7 +322,7 @@ class EventDetailWindow(Adw.Window):
 
     def _rsvp_done(self, _result, error) -> bool:
         if error:
-            self._window.add_toast(_("Couldn't send response: %s") % error)
+            self._window.add_toast(_("Couldn't send response: %s") % friendly_error(error))
             return False
         self._window.add_toast(_("Response sent."))
         if self._on_changed is not None:
@@ -354,7 +354,7 @@ class EventDetailWindow(Adw.Window):
 
     def _deleted(self, _result, error) -> bool:
         if error:
-            self._window.add_toast(_("Couldn't delete event: %s") % error)
+            self._window.add_toast(_("Couldn't delete event: %s") % friendly_error(error))
             return False
         self._window.add_toast(_("Event deleted."))
         if self._on_changed is not None:

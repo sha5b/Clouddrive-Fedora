@@ -359,9 +359,21 @@ class CloudyApplication(Adw.Application):
 
     def _on_notify_join_meeting(self, _action, param):
         """The "Join" button on a meeting-start notification: open the meeting's
-        join URL in the browser (no need to raise the app window)."""
+        join URL in the browser (no need to raise the app window). Uses the
+        portal-aware launcher so it works in the Flatpak sandbox, where
+        Gio.AppInfo.launch_default_for_uri silently no-ops."""
         uri = param.get_string()
-        if uri:
+        if not uri:
+            return
+        win = self.props.active_window
+        if win is not None and hasattr(win, "open_uri"):
+            win.open_uri(uri)
+            return
+        from gi.repository import Gtk
+
+        try:
+            Gtk.show_uri(None, uri, 0)
+        except Exception:  # noqa: BLE001
             Gio.AppInfo.launch_default_for_uri(uri, None)
 
     def _on_notify_open_chat(self, _action, param):

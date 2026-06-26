@@ -23,6 +23,7 @@ from .source_nav import (
     SourceTabs,
     action_row,
     clear_listbox,
+    friendly_error,
     is_pinned,
     is_scope_error,
     message_row,
@@ -551,7 +552,7 @@ class CalendarView(Adw.Bin):
 
     def _on_deleted(self, error) -> bool:
         if error:
-            self._window.add_toast(_("Couldn't delete: %s") % error)
+            self._window.add_toast(_("Couldn't delete: %s") % friendly_error(error))
         self._reload_current()  # resync from the server either way
         return False
 
@@ -609,7 +610,7 @@ class CalendarView(Adw.Bin):
 
     def _on_meet_now_created(self, result, error) -> bool:
         if error or not result:
-            self._window.add_toast(_("Couldn't start meeting: %s") % (error or ""))
+            self._window.add_toast(_("Couldn't start meeting: %s") % friendly_error(error))
             return False
         self._reload_current()
         url = _join_url(result)

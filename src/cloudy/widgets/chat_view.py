@@ -27,6 +27,7 @@ from .source_nav import (
     action_row,
     attachment_chip,
     clear_listbox,
+    friendly_error,
     is_muted,
     is_pinned,
     is_scope_error,
@@ -351,7 +352,7 @@ class ChatView(Adw.Bin):
     def _on_more_chats(self, result, error) -> bool:
         self._chats_loading = False
         if error:
-            self._window.add_toast(_("Couldn't load more: %s") % error)
+            self._window.add_toast(_("Couldn't load more: %s") % friendly_error(error))
             self._render_filtered()
             return False
         chats, next_token = result
@@ -904,7 +905,7 @@ class ChatView(Adw.Bin):
 
     def _on_group_changed(self, chat_id, error) -> bool:
         if error:
-            self._window.add_toast(_("Couldn't update the group: %s") % error)
+            self._window.add_toast(_("Couldn't update the group: %s") % friendly_error(error))
             return False
         # Refresh the roster + chat list (name/members may have changed).
         self._cache().invalidate(prefix=f"{self._account.id}:chat-members:{chat_id}")
@@ -1285,7 +1286,7 @@ class ChatView(Adw.Bin):
         if error or chat_id != self._chat_id:
             self._sync_older_row()
             if error:
-                self._window.add_toast(_("Couldn't load more: %s") % error)
+                self._window.add_toast(_("Couldn't load more: %s") % friendly_error(error))
             return False
         messages, next_token = result
         self._msg_next_token = next_token
@@ -1933,7 +1934,7 @@ class ChatView(Adw.Bin):
 
     def _on_downloaded(self, data, error, name) -> bool:
         if error or not data:
-            self._window.add_toast(_("Couldn't download: %s") % (error or _("no data")))
+            self._window.add_toast(_("Couldn't download: %s") % (friendly_error(error) if error else _("no data")))
             return False
         self._save_bytes(data, name)
         return False
@@ -1994,18 +1995,11 @@ class ChatView(Adw.Bin):
         clipboard.read_texture_async(None, on_texture)
         return True
 
-    # -- attach an image from a file --------------------------------------
+    # -- attach a file (any type) -----------------------------------------
     def _on_attach(self, _btn) -> None:
         if self._chat_id is None:
             return
-        dialog = Gtk.FileDialog(title=_("Attach image"))
-        filt = Gtk.FileFilter()
-        filt.set_name(_("Images"))
-        filt.add_pixbuf_formats()
-        filters = Gio.ListStore.new(Gtk.FileFilter)
-        filters.append(filt)
-        dialog.set_filters(filters)
-        dialog.set_default_filter(filt)
+        dialog = Gtk.FileDialog(title=_("Attach file"))
         folder = local_initial_folder()
         if folder is not None:
             dialog.set_initial_folder(folder)
@@ -2026,44 +2020,89 @@ class ChatView(Adw.Bin):
                 ok, data, _etag = gfile.load_contents(None)
                 if not ok:
                     continue
-                ctype = "image/png"
+                ctype = "application/octet-stream"
                 info = gfile.query_info("standard::content-type", 0, None)
                 if info and info.get_content_type():
                     ctype = info.get_content_type()
             except GLib.Error as exc:
                 self._window.add_toast(_("Couldn't read file: %s") % exc.message)
                 continue
-            self._stage_bytes(bytes(data), ctype)
+            self._stage_bytes(bytes(data), ctype, gfile.get_basename() or "")
 
     def _stage_image(self, texture) -> None:
-        self._stage_bytes(texture.save_to_png_bytes().get_data(), "image/png")
+        self._stage_bytes(texture.save_to_png_bytes().get_data(), "image/png",
+                          "pasted-image.png")
 
-    def _stage_bytes(self, data, ctype: str) -> None:
-        """Stage an image (paste or file) in the composer; sent on Send.
+    # Files up to this size send via a simple OneDrive upload; larger files are
+    # rejected with a toast rather than failing opaquely mid-send.
+    _MAX_ATTACH_BYTES = 100 * 1024 * 1024
+    # Teams caps a single chat message at 10 attachments; exceeding it makes
+    # Graph reject the whole send with an opaque "payload is invalid" 400, so
+    # enforce the limit here (and again at send time) with a clear message.
+    _MAX_ATTACH_PER_MESSAGE = 10
+
+    def _stage_bytes(self, data, ctype: str, name: str = "") -> None:
+        """Stage an attachment (paste or file) in the composer; sent on Send.
+        Images get a thumbnail preview and are sent inline; any other file gets
+        a generic icon chip and is sent as a OneDrive reference attachment.
 
         Full-resolution bytes are kept for sending; the preview is a small
         thumbnail (a Picture's natural size = its paintable's, so scale the
         paintable, not just set_size_request)."""
-        thumb = Gtk.Overlay(valign=Gtk.Align.CENTER)
+        if len(self._pending) >= self._MAX_ATTACH_PER_MESSAGE:
+            self._window.add_toast(
+                _("You can attach at most %d files per message.")
+                % self._MAX_ATTACH_PER_MESSAGE)
+            return
+        if len(data) > self._MAX_ATTACH_BYTES:
+            self._window.add_toast(_("File is too large to send (max 100 MB)."))
+            return
         try:
             preview = thumbnail_texture(data, 64)
-        except Exception:  # noqa: BLE001 - not a decodable image
-            self._window.add_toast(_("That file isn't a supported image."))
-            return
+        except Exception:  # noqa: BLE001 - not a decodable image → generic file
+            preview = None
+        if preview is not None:
+            chip, kind = self._image_chip(preview), "image"
+        else:
+            chip, kind = self._file_chip(name or _("file"), ctype), "file"
+        entry = {"data": data, "ctype": ctype or "application/octet-stream",
+                 "name": name or ("pasted-image.png" if kind == "image" else _("file")),
+                 "kind": kind, "widget": chip}
+        self._attach_remove_button(chip, entry)
+        self._pending.append(entry)
+        self._preview.append(chip)
+        self._preview.set_visible(True)
+
+    def _image_chip(self, preview) -> Gtk.Overlay:
+        thumb = Gtk.Overlay(valign=Gtk.Align.CENTER)
         pic = Gtk.Picture.new_for_paintable(preview)
         pic.set_can_shrink(True)
         pic.add_css_class("cloudy-bubble-image")
         thumb.set_child(pic)
+        return thumb
+
+    def _file_chip(self, name: str, ctype: str) -> Gtk.Overlay:
+        overlay = Gtk.Overlay(valign=Gtk.Align.CENTER)
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8,
+                      margin_top=8, margin_bottom=8, margin_start=10, margin_end=10)
+        box.add_css_class("card")
+        icon = Gtk.Image.new_from_gicon(Gio.content_type_get_icon(
+            ctype or "application/octet-stream"))
+        icon.set_pixel_size(28)
+        box.append(icon)
+        label = Gtk.Label(label=name, xalign=0, ellipsize=Pango.EllipsizeMode.MIDDLE,
+                          max_width_chars=20)
+        box.append(label)
+        overlay.set_child(box)
+        return overlay
+
+    def _attach_remove_button(self, overlay, entry) -> None:
         remove = Gtk.Button(icon_name="window-close-symbolic",
                             halign=Gtk.Align.END, valign=Gtk.Align.START)
         remove.add_css_class("circular")
         remove.add_css_class("osd")
-        entry = {"data": data, "ctype": ctype or "image/png", "widget": thumb}
         remove.connect("clicked", lambda *_a: self._remove_pending(entry))
-        thumb.add_overlay(remove)
-        self._pending.append(entry)
-        self._preview.append(thumb)
-        self._preview.set_visible(True)
+        overlay.add_overlay(remove)
 
     def _remove_pending(self, entry) -> None:
         if entry in self._pending:
@@ -2281,9 +2320,19 @@ class ChatView(Adw.Bin):
             run_async(work_edit, lambda _r, error: self._on_sent(chat_id, error))
             return
 
-        images = [(e["data"], e["ctype"]) for e in self._pending]
+        images = [(e["data"], e["ctype"])
+                  for e in self._pending if e.get("kind", "image") == "image"]
+        files = [(e["data"], e["ctype"], e.get("name", "file"))
+                 for e in self._pending if e.get("kind") == "file"]
         mentions = list(self._mentions)
-        if not text and not images:
+        if not text and not images and not files:
+            return
+        if len(images) + len(files) > self._MAX_ATTACH_PER_MESSAGE:
+            # Keep the composer (and its attachments) intact so the user can
+            # remove a few rather than losing everything.
+            self._window.add_toast(
+                _("You can attach at most %d files per message.")
+                % self._MAX_ATTACH_PER_MESSAGE)
             return
         if self._reply_to is not None:  # prepend a quote of the replied message
             quoted = (self._reply_to.get("text") or _("(image)")).replace("\n", " ")[:200]
@@ -2295,22 +2344,27 @@ class ChatView(Adw.Bin):
         # Optimistic echo for every send (plain or rich): the message bubble —
         # with any attached images rendered straight from memory — appears and
         # the thread scrolls to the bottom immediately, instead of waiting for
-        # the server round-trip + reconcile poll.
+        # the server round-trip + reconcile poll. (Non-image files appear after
+        # the reconcile, once the server has the reference attachment.)
         self._render_pending(chat_id, text, images)
         bubble = self._optimistic["widget"] if self._optimistic else None
-        self._send_message(chat_id, text, images, mentions, bubble)
+        self._send_message(chat_id, text, images, files, mentions, bubble)
 
-    def _send_message(self, chat_id, text, images, mentions, bubble=None) -> None:
+    def _send_message(self, chat_id, text, images, files, mentions, bubble=None) -> None:
         """Fire a chat send and reconcile its optimistic ``bubble``. Reused by
         the composer and by the Retry button on a failed bubble — on error the
         bubble is flagged un-sent (with Retry) instead of the thread reloading,
-        so the typed message + images are never lost."""
+        so the typed message + attachments are never lost.
+
+        ``images`` is ``[(bytes, ctype)]`` sent inline; ``files`` is
+        ``[(bytes, ctype, name)]`` uploaded to OneDrive and sent as reference
+        attachments (so any file type can be shared, not just images)."""
         if bubble is not None:
             self._mark_sending(bubble)
             self._optimistic = {"widget": bubble, "text": text}
-        # Rich (HTML) send when there are images, @mentions, or markdown
+        # Rich (HTML) send when there are images, files, @mentions, or markdown
         # formatting (**bold** / _italic_); otherwise a cheap plain-text send.
-        rich = bool(images or mentions or self._has_markdown(text))
+        rich = bool(images or files or mentions or self._has_markdown(text))
 
         def work():
             from .clients import build_account_client
@@ -2320,13 +2374,16 @@ class ChatView(Adw.Bin):
                 # Normalise each image (downscaled PNG) so Graph accepts the
                 # payload — multiple full-res images otherwise 400.
                 send_images = [self._image_for_send(d) for d, _c in images]
+                file_atts = [client.upload_chat_file(name, data, ctype)
+                             for data, ctype, name in files]
                 content, mention_array = self._compose_html(text, mentions)
                 return client.send_chat_html(
-                    chat_id, f"<div>{content}</div>", mention_array, send_images)
+                    chat_id, f"<div>{content}</div>", mention_array, send_images,
+                    file_atts)
             return client.send_chat_message(chat_id, text)
 
         run_async(work, lambda _r, error: self._on_message_sent(
-            chat_id, error, text, images, mentions, bubble))
+            chat_id, error, text, images, files, mentions, bubble))
 
     _MD_BOLD = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
     _MD_ITALIC = re.compile(r"_(.+?)_", re.DOTALL)
@@ -2396,7 +2453,7 @@ class ChatView(Adw.Bin):
 
     def _on_sent(self, chat_id, error) -> bool:
         if error:
-            self._window.add_toast(_("Couldn't send: %s") % error)
+            self._window.add_toast(_("Couldn't send: %s") % friendly_error(error))
             return False
         self._cache().invalidate(prefix=self._msg_key(chat_id))
         if chat_id == self._chat_id:
@@ -2404,19 +2461,19 @@ class ChatView(Adw.Bin):
         return False
 
     def _on_message_sent(self, chat_id, error, text=None, images=None,
-                         mentions=None, bubble=None) -> bool:
+                         files=None, mentions=None, bubble=None) -> bool:
         """After sending a NEW message: don't reload immediately — the server
         often hasn't indexed it yet, so a reload would drop the optimistic bubble
         and jump the view up. The optimistic echo already shows it; reconcile a
         moment later (server has indexed it by then) via the scroll-preserving
         poll path."""
         if error:
-            self._window.add_toast(_("Couldn't send: %s") % error)
+            self._window.add_toast(_("Couldn't send: %s") % friendly_error(error))
             # Keep the bubble in place and offer Retry rather than reloading the
             # thread (which would discard the typed message + attached images).
             if bubble is not None:
                 self._mark_failed(bubble, lambda: self._send_message(
-                    chat_id, text, images, mentions, bubble))
+                    chat_id, text, images, files, mentions, bubble))
             else:
                 self._cache().invalidate(prefix=self._msg_key(chat_id))
                 if chat_id == self._chat_id:
@@ -2595,7 +2652,7 @@ class ChatView(Adw.Bin):
 
     def _on_react_done(self, chat_id, error) -> bool:
         if error:
-            self._window.add_toast(_("Couldn't react: %s") % error)
+            self._window.add_toast(_("Couldn't react: %s") % friendly_error(error))
             # Roll back the optimistic reaction by pulling the real thread.
             self._cache().invalidate(prefix=self._msg_key(chat_id))
             if chat_id == self._chat_id:
@@ -2611,12 +2668,23 @@ class ChatView(Adw.Bin):
     def _forward(self, msg) -> None:
         self._open_new_chat(body=(msg.get("text") or ""))
 
-    def _delete_msg(self, msg, bubble) -> None:
+    def _delete_msg(self, msg, bubble=None) -> None:
         chat_id, mid = self._chat_id, msg.get("id")
         if not mid:
             return
-        if bubble is not None:  # optimistic
+        # Pull the bubble immediately so Delete feels instant. Relying on the
+        # server round-trip + reload didn't work: Graph's soft-delete is
+        # eventually consistent, so the reload right after often still returns
+        # the just-deleted message and the thread looked unchanged.
+        if bubble is None:
+            bubble = self._bubble_widgets.get(mid)
+        if bubble is not None and bubble.get_parent() is self._thread:
             self._thread.remove(bubble)
+        self._bubble_widgets.pop(mid, None)
+        # Keep the render bookkeeping in step so a poll/reload doesn't rebuild
+        # the deleted bubble back in from a stale (pre-consistency) response.
+        self._rendered_sigs = [s for s in self._rendered_sigs if s[0] != mid]
+        self._thread_sig = tuple(self._rendered_sigs)
 
         def work():
             from .clients import build_account_client
@@ -2624,4 +2692,19 @@ class ChatView(Adw.Bin):
             client = build_account_client(self._window.get_application(), self._account)
             return client.delete_chat_message(chat_id, mid)
 
-        run_async(work, lambda _r, error: self._on_sent(chat_id, error))
+        run_async(work, lambda _r, error: self._on_deleted(chat_id, mid, error))
+
+    def _on_deleted(self, chat_id, mid, error) -> bool:
+        if error:
+            self._window.add_toast(_("Couldn't delete: %s") % friendly_error(error))
+            if chat_id == self._chat_id:
+                self._load_messages(chat_id)  # restore the optimistically-pulled bubble
+            return False
+        # Drop it from the cached thread too, so reopening the chat doesn't show
+        # it again before the next revalidate.
+        cache = self._cache()
+        cached = cache.get(self._msg_key(chat_id))
+        if cached is not None:
+            cache.set(self._msg_key(chat_id),
+                      [m for m in cached[0] if m.get("id") != mid])
+        return False
