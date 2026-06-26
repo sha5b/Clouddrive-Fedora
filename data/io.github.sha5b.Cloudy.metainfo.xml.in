@@ -103,6 +103,7 @@ SPDX-FileCopyrightText: 2026 Shahab Nedaei
           <li>Reading an email now updates the unread badge instantly and clears its desktop notification</li>
           <li>Deleting a Teams message updates the conversation immediately</li>
           <li>The Activity overview lays out cleanly in balanced columns instead of leaving large empty gaps</li>
+          <li>The Files right-click integration no longer slows the file manager — it answers locally instead of asking Cloudy about every file you select</li>
         </ul>
       </description>
     </release>

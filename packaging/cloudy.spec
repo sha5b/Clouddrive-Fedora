@@ -125,6 +125,8 @@ meson test -C %{_vpath_builddir} --print-errorlogs
 - Reading mail clears its desktop notification and updates the unread badge;
   deleting a Teams message updates the thread immediately.
 - Activity overview lays out in balanced columns (no large empty gaps).
+- Nautilus integration no longer blocks the file manager on per-file D-Bus
+  lookups (local prefix check instead).
 
 * Mon Jun 22 2026 Shahab Nedaei <ned.tabulov@gmail.com> - 0.2.6-1
 - Mounted drives auto-remount at startup and reconnect if their daemon dies
